@@ -66,14 +66,18 @@ export function getWeekendContext(
 
 export function getTelemetry(
   drivers: string[] = [],
-  options?: { year?: number; grandPrix?: string; session?: string },
+  options?: { year?: number; grandPrix?: string; session?: string; lapSelections?: Record<string, number[]> },
   token?: string,
 ) {
+  const lapSelections = Object.entries(options?.lapSelections ?? {}).flatMap(([driver, laps]) =>
+    (laps ?? []).map((lap) => `${driver}:${lap}`),
+  );
   const queryParts = [
     ...drivers.map((driver) => `drivers=${encodeURIComponent(driver)}`),
     ...(options?.year ? [`year=${encodeURIComponent(String(options.year))}`] : []),
     ...(options?.grandPrix ? [`grand_prix=${encodeURIComponent(options.grandPrix)}`] : []),
     ...(options?.session ? [`session=${encodeURIComponent(options.session)}`] : []),
+    ...lapSelections.map((selection) => `lap_selections=${encodeURIComponent(selection)}`),
   ];
   const query = queryParts.length ? `?${queryParts.join("&")}` : "";
   return request<TelemetryResponse>(`/telemetry${query}`, undefined, token);

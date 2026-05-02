@@ -102,21 +102,7 @@ export default function ComparePage() {
   }, [selectedDrivers, session, token]);
 
   const comparison = useMemo(() => {
-    return (data?.series ?? []).map((series) => {
-      const topSpeed = Math.max(...series.points.map((point) => point.speed));
-      const averageThrottle =
-        series.points.reduce((sum, point) => sum + point.throttle, 0) / Math.max(series.points.length, 1);
-      const maxBrake = Math.max(...series.points.map((point) => point.brake));
-      const averageGear = series.points.reduce((sum, point) => sum + point.gear, 0) / Math.max(series.points.length, 1);
-
-      return {
-        ...series,
-        topSpeed,
-        averageThrottle,
-        maxBrake,
-        averageGear,
-      };
-    });
+    return data?.metrics ?? [];
   }, [data]);
 
   const driverOptions = useMemo(() => {
@@ -239,6 +225,7 @@ export default function ComparePage() {
             {error ? <div className="mt-5"><StatusPanel title="Error" message={error} tone="error" /></div> : null}
             {weekendContext?.notice ? <div className="mt-5"><StatusPanel title="Notice" message={weekendContext.notice} tone="warning" /></div> : null}
             {data?.notice ? <div className="mt-5"><StatusPanel title="Telemetry" message={data.notice} tone="warning" /></div> : null}
+            {data?.session_summary ? <div className="mt-5"><StatusPanel title="Telemetry Readout" message={data.session_summary} /></div> : null}
           </SectionCard>
         </div>
 
@@ -249,7 +236,17 @@ export default function ComparePage() {
                 <p className="text-[0.68rem] font-semibold uppercase tracking-[0.3em] text-zinc-500">{series.team}</p>
                 <h3 className="f1-title mt-4 text-3xl">{series.driver}</h3>
                 <div className={`radar-ring mt-6 ${index === 0 ? "ring-red" : "ring-cyan"}`}>
-                  <span>{Math.round(series.topSpeed)}</span>
+                  <span>{Math.round(series.top_speed)}</span>
+                </div>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-200">
+                    <span className="block text-[0.62rem] uppercase tracking-[0.22em] text-zinc-500">Lap</span>
+                    {series.fastest_lap_seconds ? `${series.fastest_lap_seconds.toFixed(3)}s` : "--"}
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-zinc-200">
+                    <span className="block text-[0.62rem] uppercase tracking-[0.22em] text-zinc-500">Compound</span>
+                    {series.compound ?? "--"}
+                  </div>
                 </div>
               </article>
             ))}
@@ -257,10 +254,10 @@ export default function ComparePage() {
 
           {left && right ? (
             <div className="mt-5 grid gap-4">
-              <CompareSpectrum leftLabel={left.driver} rightLabel={right.driver} leftValue={left.topSpeed} rightValue={right.topSpeed} max={340} />
-              <CompareSpectrum leftLabel={left.driver} rightLabel={right.driver} leftValue={left.averageThrottle} rightValue={right.averageThrottle} max={100} />
-              <CompareSpectrum leftLabel={left.driver} rightLabel={right.driver} leftValue={left.maxBrake} rightValue={right.maxBrake} max={100} />
-              <CompareSpectrum leftLabel={left.driver} rightLabel={right.driver} leftValue={left.averageGear} rightValue={right.averageGear} max={8} />
+              <CompareSpectrum leftLabel={left.driver} rightLabel={right.driver} leftValue={left.top_speed} rightValue={right.top_speed} max={340} />
+              <CompareSpectrum leftLabel={left.driver} rightLabel={right.driver} leftValue={left.average_throttle} rightValue={right.average_throttle} max={100} />
+              <CompareSpectrum leftLabel={left.driver} rightLabel={right.driver} leftValue={left.brake_pct} rightValue={right.brake_pct} max={100} />
+              <CompareSpectrum leftLabel={left.driver} rightLabel={right.driver} leftValue={left.gear_changes} rightValue={right.gear_changes} max={40} />
             </div>
           ) : null}
         </section>

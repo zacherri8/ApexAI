@@ -1,26 +1,17 @@
-import { TelemetrySeries } from "@/types/api";
+import { TelemetryDriverMetrics } from "@/types/api";
 
-function average(values: number[]) {
-  if (!values.length) {
-    return 0;
-  }
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-export function TelemetryHud({ series }: { series: TelemetrySeries[] }) {
-  const cards = series.map((item) => {
-    const speeds = item.points.map((point) => point.speed);
-    const throttle = item.points.map((point) => point.throttle);
-    const brakes = item.points.map((point) => point.brake);
-
-    return {
-      driver: item.driver,
-      team: item.team,
-      speed: Math.max(...speeds, 0),
-      throttle: average(throttle),
-      brake: Math.max(...brakes, 0),
-    };
-  });
+export function TelemetryHud({ metrics }: { metrics: TelemetryDriverMetrics[] }) {
+  const cards = metrics.map((item) => ({
+    driver: item.driver,
+    team: item.team,
+    color: item.color,
+    speed: item.top_speed,
+    throttle: item.average_throttle,
+    brake: item.brake_pct,
+    lap: item.fastest_lap_seconds,
+    compound: item.compound,
+    drs: item.drs_pct,
+  }));
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -33,6 +24,20 @@ export function TelemetryHud({ series }: { series: TelemetrySeries[] }) {
             </div>
             <div className={`radar-ring ${index % 2 === 0 ? "ring-red" : "ring-cyan"}`}>
               <span>{Math.round(card.speed)}</span>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2">
+              <p className="text-[0.62rem] uppercase tracking-[0.24em] text-zinc-500">Lap</p>
+              <p className="mt-2 text-lg font-semibold text-white">{card.lap ? `${card.lap.toFixed(3)}s` : "--"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2">
+              <p className="text-[0.62rem] uppercase tracking-[0.24em] text-zinc-500">Compound</p>
+              <p className="mt-2 text-lg font-semibold text-white">{card.compound ?? "--"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2">
+              <p className="text-[0.62rem] uppercase tracking-[0.24em] text-zinc-500">DRS</p>
+              <p className="mt-2 text-lg font-semibold text-white">{card.drs != null ? `${card.drs.toFixed(0)}%` : "--"}</p>
             </div>
           </div>
           <div className="mt-5 space-y-4">

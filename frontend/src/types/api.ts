@@ -1,22 +1,110 @@
 export type TelemetryPoint = {
+  time: number;
   distance: number;
   speed: number;
   throttle: number;
   brake: number;
   gear: number;
+  drs?: number | null;
+  rpm?: number | null;
+  steering?: number | null;
 };
 
 export type TelemetrySeries = {
+  series_key: string;
+  label: string;
   driver: string;
   team: string;
+  color: string;
+  lap_number?: number | null;
+  lap_time_seconds?: number | null;
+  compound?: string | null;
+  is_reference: boolean;
   points: TelemetryPoint[];
+};
+
+export type TelemetryDriverMetrics = {
+  series_key: string;
+  label: string;
+  driver: string;
+  team: string;
+  color: string;
+  lap_number?: number | null;
+  compound?: string | null;
+  tyre_life?: number | null;
+  fastest_lap_seconds?: number | null;
+  sector_1_seconds?: number | null;
+  sector_2_seconds?: number | null;
+  sector_3_seconds?: number | null;
+  top_speed: number;
+  average_speed: number;
+  average_throttle: number;
+  brake_pct: number;
+  drs_pct?: number | null;
+  top_rpm?: number | null;
+  average_rpm?: number | null;
+  gear_changes: number;
+};
+
+export type TelemetryLapOption = {
+  driver: string;
+  lap_number: number;
+  lap_time_seconds: number;
+  compound?: string | null;
+  tyre_life?: number | null;
+  is_best: boolean;
+};
+
+export type TelemetryMicroSector = {
+  series_key: string;
+  label: string;
+  driver: string;
+  segment: number;
+  start_distance: number;
+  end_distance: number;
+  time_seconds: number;
+  delta_to_best: number;
+  corner_type: string;
+};
+
+export type TelemetryCornerBreakdown = {
+  corner: string;
+  corner_type: string;
+  start_distance: number;
+  apex_distance: number;
+  end_distance: number;
+  entry_delta: Record<string, number>;
+  apex_delta: Record<string, number>;
+  exit_delta: Record<string, number>;
+  braking_points: Record<string, number>;
+  throttle_pickups: Record<string, number>;
+};
+
+export type TelemetryPerformanceSummary = {
+  series_key: string;
+  label: string;
+  driver: string;
+  braking_style: string;
+  throttle_style: string;
+  corner_profile: string;
+  consistency_score: number;
+  mistakes: string[];
+  summary: string;
 };
 
 export type TelemetryResponse = {
   series: TelemetrySeries[];
+  metrics: TelemetryDriverMetrics[];
   available_drivers: string[];
+  lap_options: TelemetryLapOption[];
+  micro_sectors: TelemetryMicroSector[];
+  corner_breakdown: TelemetryCornerBreakdown[];
+  performance: TelemetryPerformanceSummary[];
   source: string;
   notice?: string | null;
+  weather?: string | null;
+  session_summary?: string | null;
+  insights: string[];
 };
 
 export type DriverSummary = {
