@@ -1,8 +1,7 @@
 from sqlalchemy.orm import Session
 
-from app.db.repository import F1Repository
 from app.services.fastf1_service import FastF1Service
-from app.schemas.telemetry import TelemetryResponse, TelemetrySeries
+from app.schemas.telemetry import TelemetryDriverMetrics, TelemetryResponse, TelemetrySeries
 
 
 class TelemetryService:
@@ -13,33 +12,56 @@ class TelemetryService:
         year: int | None = None,
         grand_prix: str | None = None,
         session: str | None = None,
+        lap_selections: list[str] | None = None,
     ) -> TelemetryResponse:
-        repository = F1Repository(db)
         fastf1_service = FastF1Service(db)
-        driver_lookup = {driver["name"]: driver["team"] for driver in repository.get_drivers()}
         if year and grand_prix and session:
-            session_driver_lookup = fastf1_service.load_session_driver_lookup(year, grand_prix, session)
-            if session_driver_lookup:
-                driver_lookup = session_driver_lookup
-            raw_series = fastf1_service.load_session_telemetry(year, grand_prix, session)
-            if drivers:
-                raw_series = {driver: points for driver, points in raw_series.items() if driver in drivers}
+            telemetry_bundle = fastf1_service.load_session_telemetry(
+                year,
+                grand_prix,
+                session,
+                drivers,
+                lap_selections,
+            )
+            raw_series = telemetry_bundle.get("series", [])
+            raw_metrics = telemetry_bundle.get("metrics", [])
             source = "fastf1" if raw_series else "fastf1-unavailable"
             notice = None if raw_series else (
                 f"FastF1 did not return telemetry for {grand_prix} {year} {session}. "
                 "No local telemetry substitute is being injected."
             )
         else:
-            raw_series = repository.get_telemetry(drivers)
-            source = "local-fallback"
-            notice = "No explicit season/weekend/session was provided, so local sample telemetry is being shown."
+            raw_series = []
+            raw_metrics = []
+            source = "fastf1-unavailable"
+            notice = "A season, Grand Prix, and session must be provided to load FastF1 telemetry."
         series = [
-            TelemetrySeries(driver=driver, team=driver_lookup.get(driver, "Unknown"), points=points)
-            for driver, points in raw_series.items()
+            TelemetrySeries(
+                series_key=item["series_key"],
+                label=item["label"],
+                driver=item["driver"],
+                team=item["team"],
+                color=item["color"],
+                lap_number=item.get("lap_number"),
+                lap_time_seconds=item.get("lap_time_seconds"),
+                compound=item.get("compound"),
+                is_reference=item.get("is_reference", False),
+                points=item["points"],
+            )
+            for item in raw_series
         ]
+        metrics = [TelemetryDriverMetrics(**metric) for metric in raw_metrics]
         return TelemetryResponse(
             series=series,
-            available_drivers=list(driver_lookup),
+            metrics=metrics,
+            available_drivers=telemetry_bundle.get("available_drivers", []) if year and grand_prix and session else [],
+            lap_options=telemetry_bundle.get("lap_options", []) if year and grand_prix and session else [],
+            micro_sectors=telemetry_bundle.get("micro_sectors", []) if year and grand_prix and session else [],
+            corner_breakdown=telemetry_bundle.get("corner_breakdown", []) if year and grand_prix and session else [],
+            performance=telemetry_bundle.get("performance", []) if year and grand_prix and session else [],
             source=source,
             notice=notice,
+            weather=telemetry_bundle.get("weather") if year and grand_prix and session else None,
+            session_summary=telemetry_bundle.get("session_summary") if year and grand_prix and session else None,
+            insights=telemetry_bundle.get("insights", []) if year and grand_prix and session else [],
         )

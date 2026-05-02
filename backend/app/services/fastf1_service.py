@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import math
 import os
 from pathlib import Path
+import statistics
 
 from sqlalchemy.orm import Session
 
@@ -20,7 +21,8 @@ class FastF1Service:
     _season_calendar_cache: dict[int, dict | None] = {}
     _season_metadata_cache: dict[int, dict | None] = {}
     _session_cache: dict[tuple[int, str, str], object | None] = {}
-    _session_telemetry_cache: dict[tuple[int, str, str], dict[str, list[dict]]] = {}
+    _session_telemetry_cache: dict[tuple[int, str, str, tuple[str, ...], tuple[str, ...]], dict] = {}
+    _lap_telemetry_cache: dict[tuple[int, str, str, str, int], dict | None] = {}
     _session_driver_lookup_cache: dict[tuple[int, str, str], dict[str, str]] = {}
     _weekend_context_cache: dict[tuple[int, str, str], dict | None] = {}
     team_colors = {
@@ -259,41 +261,99 @@ class FastF1Service:
         self._weekend_context_cache[key] = payload
         return payload
 
-    def load_session_telemetry(self, year: int, grand_prix: str, session: str) -> dict[str, list[dict]]:
-        key = self._session_key(year, grand_prix, session)
+    def load_session_telemetry(
+        self,
+        year: int,
+        grand_prix: str,
+        session: str,
+        selected_drivers: list[str] | None = None,
+        lap_selections: list[str] | None = None,
+    ) -> dict:
+        selected_driver_key = tuple(sorted(selected_drivers or []))
+        lap_selection_key = tuple(sorted(lap_selections or []))
+        key = self._session_key(year, grand_prix, session) + (selected_driver_key, lap_selection_key)
         if key in self._session_telemetry_cache:
             return self._session_telemetry_cache[key]
         if not fastf1:
-            self._session_telemetry_cache[key] = {}
-            return {}
+            self._session_telemetry_cache[key] = self._empty_telemetry_bundle()
+            return self._session_telemetry_cache[key]
 
         race_session = self._load_session(year, grand_prix, session)
         if not race_session:
-            self._session_telemetry_cache[key] = {}
-            return {}
+            self._session_telemetry_cache[key] = self._empty_telemetry_bundle()
+            return self._session_telemetry_cache[key]
 
-        telemetry: dict[str, list[dict]] = {}
-        for driver_code in race_session.drivers[:6]:
+        selected_lookup = self._parse_lap_selection_entries(lap_selections)
+        telemetry: list[dict] = []
+        available_drivers: list[str] = []
+        lap_options: list[dict] = []
+        for index, driver_code in enumerate(race_session.drivers, start=1):
             try:
                 driver_info = race_session.get_driver(driver_code)
-                full_name = str(driver_info.get("FullName") or driver_code)
-                lap = race_session.laps.pick_drivers(driver_code).pick_fastest()
-                if lap is None:
+                full_name = str(
+                    driver_info.get("FullName")
+                    or driver_info.get("BroadcastName")
+                    or driver_info.get("Abbreviation")
+                    or driver_code
+                )
+                team_name = str(driver_info.get("TeamName") or "Unknown")
+                if selected_drivers and full_name not in selected_drivers:
                     continue
-                car_data = lap.get_car_data().add_distance()
-                telemetry[full_name] = [
-                    {
-                        "distance": float(row.Distance),
-                        "speed": float(row.Speed),
-                        "throttle": float(row.Throttle),
-                        "brake": float(row.Brake),
-                        "gear": int(row.nGear),
-                    }
-                    for row in car_data.itertuples()
-                ]
+                available_drivers.append(full_name)
+                driver_laps = race_session.laps.pick_drivers(driver_code)
+                driver_laps = driver_laps[driver_laps["LapTime"].notna()].sort_values("LapTime")
+                if driver_laps.empty:
+                    continue
+                selected_laps = self._pick_selected_laps(driver_laps, selected_lookup, full_name, str(driver_code))
+                if not selected_laps:
+                    continue
+                lap_options.extend(self._build_lap_options(driver_laps, full_name))
+                for selected_lap in selected_laps:
+                    lap_payload = self._build_lap_payload(year, grand_prix, session, driver_code, selected_lap)
+                    if not lap_payload:
+                        continue
+                    points = lap_payload["points"]
+                    if not points:
+                        continue
+                    lap_number = int(getattr(selected_lap, "LapNumber", 0) or 0) or None
+                    lap_time_seconds = self._lap_seconds(getattr(selected_lap, "LapTime", None))
+                    label = self._series_label(full_name, lap_number)
+                    series_key = self._series_key(driver_code, full_name, lap_number, session)
+                    telemetry.append(
+                        {
+                            "series_key": series_key,
+                            "label": label,
+                            "driver": full_name,
+                            "team": team_name,
+                            "color": self._team_color(team_name, index),
+                            "lap_number": lap_number,
+                            "lap_time_seconds": lap_time_seconds,
+                            "compound": str(getattr(selected_lap, "Compound", "") or "") or None,
+                            "is_reference": False,
+                            "points": points,
+                            "metrics": self._build_telemetry_metrics(
+                                series_key,
+                                label,
+                                full_name,
+                                team_name,
+                                points,
+                                selected_lap,
+                                index,
+                            ),
+                            "lap_samples": self._extract_lap_time_samples(driver_laps, selected_lap),
+                        }
+                    )
             except Exception:  # pragma: no cover - FastF1 session irregularities
                 continue
-        payload = telemetry
+        payload = self._compose_telemetry_bundle(
+            race_session,
+            grand_prix,
+            year,
+            session,
+            telemetry,
+            available_drivers,
+            lap_options,
+        )
         self._session_telemetry_cache[key] = payload
         return payload
 
@@ -313,6 +373,442 @@ class FastF1Service:
                     return replay
 
         return self._build_unavailable_replay_dataset(year, grand_prix, session)
+
+    @staticmethod
+    def _parse_lap_selection_entries(selections: list[str] | None) -> list[tuple[str, int]]:
+        parsed: list[tuple[str, int]] = []
+        for selection in selections or []:
+            if ":" not in selection:
+                continue
+            driver, lap_value = selection.split(":", 1)
+            driver = driver.strip()
+            try:
+                parsed.append((driver, int(lap_value)))
+            except (TypeError, ValueError):
+                continue
+        return parsed
+
+    @staticmethod
+    def _pick_selected_laps(
+        driver_laps,
+        selected_lookup: list[tuple[str, int]],
+        full_name: str,
+        driver_code: str,
+        max_overlays: int = 3,
+    ):
+        preferred_laps = [
+            lap_number
+            for driver_name, lap_number in selected_lookup
+            if driver_name == full_name or driver_name == driver_code
+        ]
+        if not preferred_laps:
+            return [driver_laps.iloc[0]] if len(driver_laps) else []
+
+        selections = []
+        seen_laps: set[int] = set()
+        for preferred_lap in preferred_laps:
+            if preferred_lap in seen_laps:
+                continue
+            matching_lap = driver_laps[driver_laps["LapNumber"] == preferred_lap]
+            if matching_lap.empty:
+                continue
+            selections.append(matching_lap.iloc[0])
+            seen_laps.add(preferred_lap)
+            if len(selections) >= max_overlays:
+                break
+        return selections or ([driver_laps.iloc[0]] if len(driver_laps) else [])
+
+    @staticmethod
+    def _series_label(driver: str, lap_number: int | None) -> str:
+        return f"{driver} L{lap_number}" if lap_number else driver
+
+    @staticmethod
+    def _series_key(driver_code: str, driver: str, lap_number: int | None, session: str) -> str:
+        base = f"{driver_code}-{session}-{lap_number or 'na'}-{driver}".lower()
+        return base.replace(" ", "-")
+
+    def _build_lap_options(self, driver_laps, full_name: str, limit: int = 5) -> list[dict]:
+        options: list[dict] = []
+        for index, lap in enumerate(driver_laps.head(limit).itertuples(), start=1):
+            options.append(
+                {
+                    "driver": full_name,
+                    "lap_number": int(getattr(lap, "LapNumber", 0) or 0),
+                    "lap_time_seconds": self._lap_seconds(getattr(lap, "LapTime", None)) or 0.0,
+                    "compound": str(getattr(lap, "Compound", "") or "") or None,
+                    "tyre_life": int(getattr(lap, "TyreLife", 0) or 0) or None,
+                    "is_best": index == 1,
+                }
+            )
+        return options
+
+    def _build_lap_payload(self, year: int, grand_prix: str, session: str, driver_code: str, lap) -> dict | None:
+        lap_number = int(getattr(lap, "LapNumber", 0) or 0)
+        key = (year, grand_prix.strip().lower(), session.strip().upper(), str(driver_code), lap_number)
+        if key in self._lap_telemetry_cache:
+            return self._lap_telemetry_cache[key]
+
+        try:
+            car_data = lap.get_car_data().add_distance()
+        except Exception:  # pragma: no cover
+            self._lap_telemetry_cache[key] = None
+            return None
+
+        steering_samples = self._build_steering_samples(lap)
+        points = self._downsample_telemetry_points(
+            [
+                {
+                    "time": round(float(getattr(row, "Time").total_seconds()), 3),
+                    "distance": float(row.Distance),
+                    "speed": float(row.Speed),
+                    "throttle": float(row.Throttle),
+                    "brake": float(row.Brake),
+                    "gear": int(row.nGear),
+                    "drs": int(getattr(row, "DRS", 0)) if getattr(row, "DRS", None) is not None else None,
+                    "rpm": int(getattr(row, "RPM", 0)) if getattr(row, "RPM", None) is not None else None,
+                    "steering": self._interpolate_steering(
+                        steering_samples,
+                        float(getattr(row, "Time").total_seconds()),
+                    ),
+                }
+                for row in car_data.itertuples()
+                if hasattr(getattr(row, "Time", None), "total_seconds")
+            ]
+        )
+        payload = {"points": points}
+        self._lap_telemetry_cache[key] = payload
+        return payload
+
+    @staticmethod
+    def _build_steering_samples(lap) -> list[dict]:
+        get_pos_data = getattr(lap, "get_pos_data", None)
+        if not callable(get_pos_data):
+            return []
+        try:
+            pos_data = get_pos_data()
+        except Exception:  # pragma: no cover
+            return []
+        if pos_data is None or getattr(pos_data, "empty", True):
+            return []
+
+        points: list[dict] = []
+        for row in pos_data.itertuples():
+            timestamp_value = getattr(row, "Time", None)
+            if not hasattr(timestamp_value, "total_seconds"):
+                continue
+            points.append(
+                {
+                    "time": float(timestamp_value.total_seconds()),
+                    "x": float(getattr(row, "X", 0.0)),
+                    "y": float(getattr(row, "Y", 0.0)),
+                }
+            )
+        if len(points) < 3:
+            return []
+
+        headings: list[float] = []
+        for index in range(1, len(points)):
+            dx = points[index]["x"] - points[index - 1]["x"]
+            dy = points[index]["y"] - points[index - 1]["y"]
+            headings.append(math.degrees(math.atan2(dy, dx)))
+
+        samples: list[dict] = []
+        for index in range(1, len(points) - 1):
+            previous_heading = headings[index - 1]
+            next_heading = headings[index]
+            delta = next_heading - previous_heading
+            while delta > 180:
+                delta -= 360
+            while delta < -180:
+                delta += 360
+            samples.append({"time": points[index]["time"], "steering": max(-100.0, min(100.0, delta * 2.5))})
+        return samples
+
+    @staticmethod
+    def _interpolate_steering(samples: list[dict], target_time: float) -> float | None:
+        if not samples:
+            return None
+        if target_time <= samples[0]["time"]:
+            return round(samples[0]["steering"], 2)
+        if target_time >= samples[-1]["time"]:
+            return round(samples[-1]["steering"], 2)
+        for index in range(1, len(samples)):
+            after = samples[index]
+            before = samples[index - 1]
+            if after["time"] >= target_time:
+                span = max(after["time"] - before["time"], 1e-6)
+                ratio = (target_time - before["time"]) / span
+                return round(before["steering"] + (after["steering"] - before["steering"]) * ratio, 2)
+        return round(samples[-1]["steering"], 2)
+
+    @staticmethod
+    def _extract_lap_time_samples(driver_laps, selected_lap, limit: int = 5) -> list[float]:
+        samples = [
+            value
+            for value in (
+                FastF1Service._lap_seconds(getattr(lap, "LapTime", None))
+                for lap in driver_laps.head(limit).itertuples()
+            )
+            if value is not None
+        ]
+        selected_seconds = FastF1Service._lap_seconds(getattr(selected_lap, "LapTime", None))
+        if selected_seconds is not None and selected_seconds not in samples:
+            samples.insert(0, selected_seconds)
+        return samples[:limit]
+
+    def _compose_telemetry_bundle(
+        self,
+        race_session,
+        grand_prix: str,
+        year: int,
+        session: str,
+        telemetry: list[dict],
+        available_drivers: list[str],
+        lap_options: list[dict],
+    ) -> dict:
+        series = list(telemetry)
+        series.sort(key=lambda item: item["metrics"]["fastest_lap_seconds"] or float("inf"))
+        if series:
+            series[0]["is_reference"] = True
+
+        metrics = [item["metrics"] for item in series]
+        micro_sectors = self._build_micro_sectors(series)
+        corner_breakdown = self._build_corner_breakdown(series)
+        performance = self._build_performance_summary(series)
+        return {
+            "series": series,
+            "metrics": metrics,
+            "available_drivers": sorted(set(available_drivers)),
+            "lap_options": lap_options,
+            "micro_sectors": micro_sectors,
+            "corner_breakdown": corner_breakdown,
+            "performance": performance,
+            "weather": self._describe_weather(race_session),
+            "session_summary": self._build_telemetry_summary(race_session, grand_prix, year, session, telemetry),
+            "insights": self._build_telemetry_insights(metrics, None, self._describe_weather(race_session)),
+        }
+
+    def _build_micro_sectors(self, series: list[dict], segments: int = 12) -> list[dict]:
+        if not series:
+            return []
+        max_distance = min((item["points"][-1]["distance"] for item in series if item["points"]), default=0.0)
+        if max_distance <= 0:
+            return []
+        edges = [max_distance * segment / segments for segment in range(segments + 1)]
+        output: list[dict] = []
+        reference = series[0]
+        for segment in range(segments):
+            start_distance = edges[segment]
+            end_distance = edges[segment + 1]
+            segment_times: dict[str, float] = {}
+            segment_speeds: dict[str, float] = {}
+            for item in series:
+                start_time = self._time_at_distance(item["points"], start_distance)
+                end_time = self._time_at_distance(item["points"], end_distance)
+                speed = self._value_at_distance(item["points"], (start_distance + end_distance) / 2, "speed")
+                if start_time is None or end_time is None or speed is None:
+                    continue
+                segment_times[item["label"]] = max(0.0, round(end_time - start_time, 4))
+                segment_speeds[item["label"]] = speed
+            if not segment_times:
+                continue
+            best_time = min(segment_times.values())
+            corner_type = self._corner_type_from_speed(segment_speeds.get(reference["label"], min(segment_speeds.values())))
+            for driver, time_seconds in segment_times.items():
+                output.append(
+                    {
+                        "driver": driver,
+                        "label": driver,
+                        "series_key": driver.lower().replace(" ", "-"),
+                        "segment": segment + 1,
+                        "start_distance": round(start_distance, 1),
+                        "end_distance": round(end_distance, 1),
+                        "time_seconds": round(time_seconds, 4),
+                        "delta_to_best": round(time_seconds - best_time, 4),
+                        "corner_type": corner_type,
+                    }
+                )
+        return output
+
+    def _build_corner_breakdown(self, series: list[dict]) -> list[dict]:
+        if not series:
+            return []
+        reference = series[0]
+        reference_points = reference["points"]
+        braking_points = [point for point in reference_points if point["brake"] > 15]
+        if not braking_points:
+            return []
+
+        zones: list[tuple[int, int]] = []
+        start_index = None
+        for index, point in enumerate(reference_points):
+            if point["brake"] > 15 and start_index is None:
+                start_index = index
+            elif point["brake"] <= 15 and start_index is not None:
+                if index - start_index > 4:
+                    zones.append((start_index, index - 1))
+                start_index = None
+        if start_index is not None and len(reference_points) - start_index > 4:
+            zones.append((start_index, len(reference_points) - 1))
+
+        output: list[dict] = []
+        for corner_index, (zone_start, zone_end) in enumerate(zones[:8], start=1):
+            zone = reference_points[zone_start : zone_end + 1]
+            apex_point = min(zone, key=lambda point: point["speed"])
+            start_distance = max(0.0, zone[0]["distance"] - 75)
+            apex_distance = apex_point["distance"]
+            end_distance = min(reference_points[-1]["distance"], zone[-1]["distance"] + 100)
+            entry_times: dict[str, float] = {}
+            apex_times: dict[str, float] = {}
+            exit_times: dict[str, float] = {}
+            braking_map: dict[str, float] = {}
+            throttle_map: dict[str, float] = {}
+            for item in series:
+                points = item["points"]
+                entry_start = self._time_at_distance(points, start_distance)
+                apex_time = self._time_at_distance(points, apex_distance)
+                exit_time = self._time_at_distance(points, end_distance)
+                if entry_start is None or apex_time is None or exit_time is None:
+                    continue
+                entry_times[item["label"]] = max(0.0, apex_time - entry_start)
+                apex_times[item["label"]] = max(0.0, min(0.4, (exit_time - entry_start) / 3))
+                exit_times[item["label"]] = max(0.0, exit_time - apex_time)
+                braking_map[item["label"]] = round(self._braking_point(points, start_distance, apex_distance), 1)
+                throttle_map[item["label"]] = round(self._throttle_pickup(points, apex_distance, end_distance), 1)
+            if not entry_times:
+                continue
+            best_entry = min(entry_times.values())
+            best_apex = min(apex_times.values())
+            best_exit = min(exit_times.values())
+            output.append(
+                {
+                    "corner": f"C{corner_index}",
+                    "corner_type": self._corner_type_from_speed(apex_point["speed"]),
+                    "start_distance": round(start_distance, 1),
+                    "apex_distance": round(apex_distance, 1),
+                    "end_distance": round(end_distance, 1),
+                    "entry_delta": {driver: round(value - best_entry, 4) for driver, value in entry_times.items()},
+                    "apex_delta": {driver: round(value - best_apex, 4) for driver, value in apex_times.items()},
+                    "exit_delta": {driver: round(value - best_exit, 4) for driver, value in exit_times.items()},
+                    "braking_points": braking_map,
+                    "throttle_pickups": throttle_map,
+                }
+            )
+        return output
+
+    def _build_performance_summary(self, series: list[dict]) -> list[dict]:
+        summaries: list[dict] = []
+        for item in series:
+            metric = item["metrics"]
+            lap_samples = item.get("lap_samples", [])
+            consistency = self._consistency_score(lap_samples)
+            braking_style = "Aggressive" if metric["brake_pct"] > 20 else "Smooth" if metric["brake_pct"] < 13 else "Balanced"
+            throttle_style = "Early throttle" if metric["average_throttle"] >= 72 else "Measured throttle" if metric["average_throttle"] >= 60 else "Late throttle"
+            corner_profile = self._dominant_corner_profile(item["points"])
+            mistakes = self._detect_mistakes(item["points"], metric, consistency)
+            summaries.append(
+                {
+                    "series_key": item["series_key"],
+                    "label": item["label"],
+                    "driver": item["driver"],
+                    "braking_style": braking_style,
+                    "throttle_style": throttle_style,
+                    "corner_profile": corner_profile,
+                    "consistency_score": round(consistency, 1),
+                    "mistakes": mistakes,
+                    "summary": (
+                        f"{item['label']} trends {braking_style.lower()} on brake release with "
+                        f"{throttle_style.lower()}, and looks strongest in {corner_profile.lower()} corners."
+                    ),
+                }
+            )
+        return summaries
+
+    @staticmethod
+    def _consistency_score(lap_samples: list[float]) -> float:
+        if len(lap_samples) < 2:
+            return 100.0
+        stdev = statistics.pstdev(lap_samples)
+        return max(0.0, min(100.0, 100 - (stdev * 120)))
+
+    @staticmethod
+    def _dominant_corner_profile(points: list[dict]) -> str:
+        if not points:
+            return "Mixed"
+        speeds = [point["speed"] for point in points]
+        avg_speed = sum(speeds) / max(len(speeds), 1)
+        return FastF1Service._corner_type_from_speed(avg_speed)
+
+    def _detect_mistakes(self, points: list[dict], metric: dict, consistency: float) -> list[str]:
+        mistakes: list[str] = []
+        if metric["brake_pct"] > 23:
+            mistakes.append("Over-braking trend in heavier stops")
+        if metric["average_throttle"] < 58:
+            mistakes.append("Late throttle application on corner exits")
+        if metric["gear_changes"] > 18:
+            mistakes.append("Busy low-speed balance with extra gear corrections")
+        if consistency < 94:
+            mistakes.append("Lap execution variance is higher than the session baseline")
+        steering_peaks = [abs(point.get("steering") or 0) for point in points]
+        if steering_peaks and max(steering_peaks) > 70:
+            mistakes.append("Potential missed-apex corrections through peak steering zones")
+        return mistakes[:3]
+
+    @staticmethod
+    def _time_at_distance(points: list[dict], distance: float) -> float | None:
+        if not points:
+            return None
+        if distance <= points[0]["distance"]:
+            return points[0]["time"]
+        if distance >= points[-1]["distance"]:
+            return points[-1]["time"]
+        for index in range(1, len(points)):
+            after = points[index]
+            before = points[index - 1]
+            if after["distance"] >= distance:
+                span = max(after["distance"] - before["distance"], 1e-6)
+                ratio = (distance - before["distance"]) / span
+                return before["time"] + (after["time"] - before["time"]) * ratio
+        return points[-1]["time"]
+
+    @staticmethod
+    def _value_at_distance(points: list[dict], distance: float, key: str) -> float | None:
+        if not points:
+            return None
+        if distance <= points[0]["distance"]:
+            return float(points[0].get(key) or 0.0)
+        if distance >= points[-1]["distance"]:
+            return float(points[-1].get(key) or 0.0)
+        for index in range(1, len(points)):
+            after = points[index]
+            before = points[index - 1]
+            if after["distance"] >= distance:
+                span = max(after["distance"] - before["distance"], 1e-6)
+                ratio = (distance - before["distance"]) / span
+                before_value = float(before.get(key) or 0.0)
+                after_value = float(after.get(key) or 0.0)
+                return before_value + (after_value - before_value) * ratio
+        return float(points[-1].get(key) or 0.0)
+
+    @staticmethod
+    def _corner_type_from_speed(speed: float) -> str:
+        if speed < 120:
+            return "Slow"
+        if speed < 200:
+            return "Medium"
+        return "Fast"
+
+    def _braking_point(self, points: list[dict], start_distance: float, apex_distance: float) -> float:
+        for point in points:
+            if start_distance <= point["distance"] <= apex_distance and point["brake"] > 10:
+                return point["distance"]
+        return apex_distance
+
+    def _throttle_pickup(self, points: list[dict], apex_distance: float, end_distance: float) -> float:
+        for point in points:
+            if apex_distance <= point["distance"] <= end_distance and point["throttle"] > 60:
+                return point["distance"]
+        return end_distance
 
     def _load_session(self, year: int, grand_prix: str, session: str):
         key = self._session_key(year, grand_prix, session)
@@ -504,6 +1000,156 @@ class FastF1Service:
             "drivers": [],
             "frames": [],
         }
+
+    @staticmethod
+    def _empty_telemetry_bundle() -> dict:
+        return {
+            "series": [],
+            "metrics": [],
+            "available_drivers": [],
+            "lap_options": [],
+            "micro_sectors": [],
+            "corner_breakdown": [],
+            "performance": [],
+            "weather": None,
+            "session_summary": None,
+            "insights": [],
+        }
+
+    @staticmethod
+    def _downsample_telemetry_points(points: list[dict], limit: int = 240) -> list[dict]:
+        if len(points) <= limit:
+            return points
+        step = max(1, len(points) // limit)
+        reduced = points[::step]
+        if reduced[-1] != points[-1]:
+            reduced.append(points[-1])
+        return reduced
+
+    def _build_telemetry_metrics(
+        self,
+        series_key: str,
+        label: str,
+        driver: str,
+        team: str,
+        points: list[dict],
+        lap,
+        index: int,
+    ) -> dict:
+        speeds = [point["speed"] for point in points]
+        throttles = [point["throttle"] for point in points]
+        brakes = [point["brake"] for point in points]
+        drs_samples = [point["drs"] for point in points if point["drs"] is not None]
+        rpm_samples = [point["rpm"] for point in points if point["rpm"] is not None]
+        gear_changes = sum(
+            1 for point_index in range(1, len(points)) if points[point_index]["gear"] != points[point_index - 1]["gear"]
+        )
+
+        return {
+            "series_key": series_key,
+            "label": label,
+            "driver": driver,
+            "team": team,
+            "color": self._team_color(team, index),
+            "lap_number": int(getattr(lap, "LapNumber", 0) or 0) or None,
+            "compound": str(getattr(lap, "Compound", "") or "") or None,
+            "tyre_life": int(getattr(lap, "TyreLife", 0) or 0) or None,
+            "fastest_lap_seconds": self._lap_seconds(getattr(lap, "LapTime", None)),
+            "sector_1_seconds": self._lap_seconds(getattr(lap, "Sector1Time", None)),
+            "sector_2_seconds": self._lap_seconds(getattr(lap, "Sector2Time", None)),
+            "sector_3_seconds": self._lap_seconds(getattr(lap, "Sector3Time", None)),
+            "top_speed": round(max(speeds, default=0), 1),
+            "average_speed": round(sum(speeds) / max(len(speeds), 1), 1),
+            "average_throttle": round(sum(throttles) / max(len(throttles), 1), 1),
+            "brake_pct": round((sum(1 for brake in brakes if brake > 0) / max(len(brakes), 1)) * 100, 1),
+            "drs_pct": round((sum(1 for sample in drs_samples if sample and sample > 0) / max(len(drs_samples), 1)) * 100, 1)
+            if drs_samples
+            else None,
+            "top_rpm": max(rpm_samples, default=None),
+            "average_rpm": round(sum(rpm_samples) / max(len(rpm_samples), 1), 0) if rpm_samples else None,
+            "gear_changes": gear_changes,
+        }
+
+    @staticmethod
+    def _lap_seconds(value) -> float | None:
+        if value is None or not hasattr(value, "total_seconds"):
+            return None
+        try:
+            return round(float(value.total_seconds()), 3)
+        except Exception:  # pragma: no cover
+            return None
+
+    def _filter_telemetry_bundle(self, payload: dict, selected_drivers: list[str] | None = None) -> dict:
+        series = payload.get("series", [])
+        if selected_drivers:
+            selected = set(selected_drivers)
+            series = [item for item in series if item["driver"] in selected]
+        metrics = [item["metrics"] for item in series]
+        insights = self._build_telemetry_insights(metrics, payload.get("session_summary"), payload.get("weather"))
+        return {
+            "series": [
+                {
+                    "driver": item["driver"],
+                    "series_key": item["series_key"],
+                    "label": item["label"],
+                    "team": item["team"],
+                    "color": item["color"],
+                    "lap_number": item.get("lap_number"),
+                    "lap_time_seconds": item.get("lap_time_seconds"),
+                    "compound": item.get("compound"),
+                    "is_reference": item.get("is_reference", False),
+                    "points": item["points"],
+                }
+                for item in series
+            ],
+            "metrics": metrics,
+            "available_drivers": payload.get("available_drivers", []),
+            "lap_options": payload.get("lap_options", []),
+            "micro_sectors": payload.get("micro_sectors", []),
+            "corner_breakdown": payload.get("corner_breakdown", []),
+            "performance": payload.get("performance", []),
+            "weather": payload.get("weather"),
+            "session_summary": payload.get("session_summary"),
+            "insights": insights,
+        }
+
+    @staticmethod
+    def _build_telemetry_summary(race_session, grand_prix: str, year: int, session: str, telemetry: dict[str, dict]) -> str:
+        event_name = str(getattr(race_session.event, "EventName", grand_prix) or grand_prix)
+        session_label = FastF1Service._session_display_name(session)
+        return (
+            f"{event_name} {year} {session_label}: FastF1 telemetry loaded {len(telemetry)} selected lap overlays "
+            f"for the chosen session."
+        )
+
+    @staticmethod
+    def _build_telemetry_insights(metrics: list[dict], session_summary: str | None, weather: str | None) -> list[str]:
+        insights: list[str] = []
+        if session_summary:
+            insights.append(session_summary)
+        if weather:
+            insights.append(weather)
+        if not metrics:
+            return insights
+
+        sorted_by_lap = [metric for metric in metrics if metric.get("fastest_lap_seconds") is not None]
+        sorted_by_lap.sort(key=lambda item: item["fastest_lap_seconds"])
+        if sorted_by_lap:
+            leader = sorted_by_lap[0]
+            insights.append(
+                f"{leader.get('label') or leader['driver']} set the fastest selected lap at {leader['fastest_lap_seconds']:.3f}s "
+                f"on {leader.get('compound') or 'the recorded compound'}."
+            )
+        top_speed_driver = max(metrics, key=lambda item: item["top_speed"])
+        insights.append(
+            f"{top_speed_driver.get('label') or top_speed_driver['driver']} reached the highest straight-line speed at {top_speed_driver['top_speed']:.1f} km/h."
+        )
+        throttle_driver = max(metrics, key=lambda item: item["average_throttle"])
+        brake_driver = max(metrics, key=lambda item: item["brake_pct"])
+        insights.append(
+            f"{throttle_driver.get('label') or throttle_driver['driver']} carried the strongest throttle commitment, while {brake_driver.get('label') or brake_driver['driver']} spent the largest share of the lap on the brakes."
+        )
+        return insights[:4]
 
     def _team_color(self, team_name: str, index: int) -> str:
         if team_name in self.team_colors:
