@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 
@@ -77,6 +77,12 @@ function countSelectedLapOverlays(lapSelections: Record<string, number[]>, selec
   return selectedDrivers.reduce((sum, driver) => sum + (lapSelections[driver]?.length ?? 0), 0);
 }
 
+function clampWindowRange(start: number, end: number, maxDistance: number) {
+  const nextStart = Math.max(0, Math.min(start, maxDistance));
+  const nextEnd = Math.max(nextStart, Math.min(end, maxDistance));
+  return { start: nextStart, end: nextEnd };
+}
+
 export default function DashboardPage() {
   const { token } = useAuth();
   const [calendar, setCalendar] = useState<SeasonCalendarResponse | null>(null);
@@ -89,6 +95,12 @@ export default function DashboardPage() {
   const [error, setError] = useState("");
   const [session, setSession] = useState(defaultSession);
   const [visibleSignals, setVisibleSignals] = useState<Record<string, boolean>>(defaultSignals);
+  const [distanceWindow, setDistanceWindow] = useState<{ start: number; end: number } | null>(null);
+  const [focusedCorner, setFocusedCorner] = useState<string | null>(null);
+  const [deltaPair, setDeltaPair] = useState<{ referenceKey: string | null; comparisonKey: string | null }>({
+    referenceKey: null,
+    comparisonKey: null,
+  });
   const telemetrySelectionKey = useMemo(
     () =>
       JSON.stringify({
@@ -103,6 +115,9 @@ export default function DashboardPage() {
       }),
     [lapSelections, selectedDrivers, session.grandPrix, session.session, session.year],
   );
+  const telemetrySeries = telemetry?.series ?? [];
+  const telemetryCorners = telemetry?.corner_breakdown ?? [];
+  const maxDistance = telemetrySeries[0]?.points.at(-1)?.distance ?? 0;
 
   useEffect(() => {
     if (!token) {
@@ -181,6 +196,25 @@ export default function DashboardPage() {
       active = false;
     };
   }, [session.grandPrix, session.session, session.year, token]);
+
+  useEffect(() => {
+    if (!telemetrySeries.length) {
+      setDeltaPair({ referenceKey: null, comparisonKey: null });
+      setDistanceWindow(null);
+      setFocusedCorner(null);
+      return;
+    }
+
+    setDeltaPair((current) => {
+      const availableKeys = telemetrySeries.map((item) => item.series_key);
+      const referenceKey = availableKeys.includes(current.referenceKey ?? "") ? current.referenceKey : telemetrySeries[0]?.series_key ?? null;
+      const comparisonKey =
+        availableKeys.includes(current.comparisonKey ?? "") && current.comparisonKey !== referenceKey
+          ? current.comparisonKey
+          : telemetrySeries.find((item) => item.series_key !== referenceKey)?.series_key ?? null;
+      return { referenceKey, comparisonKey };
+    });
+  }, [telemetrySeries]);
 
   useEffect(() => {
     if (!token || !session.grandPrix || !selectedDrivers.length) {
@@ -346,6 +380,47 @@ export default function DashboardPage() {
       ...current,
       [signal]: !current[signal],
     }));
+  }
+
+  function focusCorner(cornerName: string) {
+    const corner = telemetryCorners.find((item) => item.corner === cornerName);
+    if (!corner || maxDistance <= 0) {
+      return;
+    }
+    const padding = Math.max(60, (corner.end_distance - corner.start_distance) * 0.35);
+    setFocusedCorner(corner.corner);
+    setDistanceWindow(
+      clampWindowRange(corner.start_distance - padding, corner.end_distance + padding, maxDistance),
+    );
+  }
+
+  function resetInspectionWindow() {
+    setFocusedCorner(null);
+    setDistanceWindow(null);
+  }
+
+  function zoomInspection(scale: number) {
+    if (maxDistance <= 0) {
+      return;
+    }
+    if (!distanceWindow) {
+      const span = maxDistance * scale;
+      setDistanceWindow(clampWindowRange(0, span, maxDistance));
+      return;
+    }
+    const currentSpan = distanceWindow.end - distanceWindow.start;
+    const nextSpan = Math.max(150, currentSpan * scale);
+    const center = distanceWindow.start + currentSpan / 2;
+    setDistanceWindow(clampWindowRange(center - nextSpan / 2, center + nextSpan / 2, maxDistance));
+  }
+
+  function panInspection(direction: "left" | "right") {
+    if (!distanceWindow || maxDistance <= 0) {
+      return;
+    }
+    const span = distanceWindow.end - distanceWindow.start;
+    const shift = span * 0.3 * (direction === "left" ? -1 : 1);
+    setDistanceWindow(clampWindowRange(distanceWindow.start + shift, distanceWindow.end + shift, maxDistance));
   }
 
   return (
@@ -564,14 +639,165 @@ export default function DashboardPage() {
               {telemetry?.notice ? <StatusPanel message={telemetry.notice} title="Telemetry" tone="warning" /> : null}
               {error ? <StatusPanel message={error} title="Error" tone="error" /> : null}
 
+              {telemetrySeries.length ? (
+                <div className="rounded-[24px] border border-white/10 bg-white/[0.03] p-4">
+                  <div className="grid gap-4 xl:grid-cols-[1.2fr,0.8fr]">
+                    <div>
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.28em] text-zinc-500">Inspection Window</p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          className={`rounded-full border px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] transition ${
+                            !distanceWindow ? "border-fuchsia-400/70 bg-fuchsia-500/15 text-white" : "border-white/10 bg-white/5 text-zinc-400"
+                          }`}
+                          onClick={resetInspectionWindow}
+                          type="button"
+                        >
+                          Full Lap
+                        </button>
+                        <button className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-zinc-300 transition hover:border-white/20" onClick={() => zoomInspection(0.7)} type="button">
+                          Zoom In
+                        </button>
+                        <button className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-zinc-300 transition hover:border-white/20" onClick={() => zoomInspection(1.35)} type="button">
+                          Zoom Out
+                        </button>
+                        <button className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-zinc-300 transition hover:border-white/20" onClick={() => panInspection("left")} type="button">
+                          Shift Left
+                        </button>
+                        <button className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-zinc-300 transition hover:border-white/20" onClick={() => panInspection("right")} type="button">
+                          Shift Right
+                        </button>
+                      </div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <label className="text-[0.62rem] uppercase tracking-[0.18em] text-zinc-500">
+                          Window Start
+                          <input
+                            className="mt-2 w-full accent-fuchsia-500"
+                            max={Math.max(0, maxDistance)}
+                            min={0}
+                            step={10}
+                            type="range"
+                            value={distanceWindow?.start ?? 0}
+                            onChange={(event) =>
+                              setDistanceWindow(
+                                clampWindowRange(
+                                  Number(event.target.value),
+                                  distanceWindow?.end ?? maxDistance,
+                                  maxDistance,
+                                ),
+                              )
+                            }
+                          />
+                          <span className="mt-2 block text-xs text-zinc-400">{Math.round(distanceWindow?.start ?? 0)}m</span>
+                        </label>
+                        <label className="text-[0.62rem] uppercase tracking-[0.18em] text-zinc-500">
+                          Window End
+                          <input
+                            className="mt-2 w-full accent-fuchsia-500"
+                            max={Math.max(0, maxDistance)}
+                            min={0}
+                            step={10}
+                            type="range"
+                            value={distanceWindow?.end ?? maxDistance}
+                            onChange={(event) =>
+                              setDistanceWindow(
+                                clampWindowRange(
+                                  distanceWindow?.start ?? 0,
+                                  Number(event.target.value),
+                                  maxDistance,
+                                ),
+                              )
+                            }
+                          />
+                          <span className="mt-2 block text-xs text-zinc-400">{Math.round(distanceWindow?.end ?? maxDistance)}m</span>
+                        </label>
+                      </div>
+                      <div className="mt-3 text-xs text-zinc-400">
+                        {distanceWindow
+                          ? `Focused slice: ${Math.round(distanceWindow.start)}m to ${Math.round(distanceWindow.end)}m${focusedCorner ? ` around ${focusedCorner}` : ""}.`
+                          : `Full-lap view across ${Math.round(maxDistance)}m of sampled distance.`}
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {telemetryCorners.slice(0, 8).map((corner) => (
+                          <button
+                            key={corner.corner}
+                            className={`rounded-full border px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] transition ${
+                              focusedCorner === corner.corner
+                                ? "border-red-500/70 bg-red-500/15 text-white"
+                                : "border-white/10 bg-white/5 text-zinc-400"
+                            }`}
+                            onClick={() => focusCorner(corner.corner)}
+                            type="button"
+                          >
+                            {corner.corner} • {corner.corner_type}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.28em] text-zinc-500">Delta Pair</p>
+                      <div className="mt-3 grid gap-3">
+                        <label className="text-xs uppercase tracking-[0.18em] text-zinc-500">
+                          Reference Trace
+                          <select
+                            className="f1-input mt-2 w-full rounded-xl px-3 py-2 text-xs"
+                            value={deltaPair.referenceKey ?? ""}
+                            onChange={(event) =>
+                              setDeltaPair((current) => ({
+                                ...current,
+                                referenceKey: event.target.value || null,
+                              }))
+                            }
+                          >
+                            {telemetrySeries.map((item) => (
+                              <option key={item.series_key} value={item.series_key}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="text-xs uppercase tracking-[0.18em] text-zinc-500">
+                          Comparison Trace
+                          <select
+                            className="f1-input mt-2 w-full rounded-xl px-3 py-2 text-xs"
+                            value={deltaPair.comparisonKey ?? ""}
+                            onChange={(event) =>
+                              setDeltaPair((current) => ({
+                                ...current,
+                                comparisonKey: event.target.value || null,
+                              }))
+                            }
+                          >
+                            {telemetrySeries
+                              .filter((item) => item.series_key !== deltaPair.referenceKey)
+                              .map((item) => (
+                                <option key={item.series_key} value={item.series_key}>
+                                  {item.label}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               <TelemetryHud metrics={telemetry?.metrics ?? []} />
-              {visibleSignals.speed ? <TelemetryChart series={telemetry?.series ?? []} metric="speed" /> : null}
-              {visibleSignals.throttle ? <TelemetryChart series={telemetry?.series ?? []} metric="throttle" /> : null}
-              {visibleSignals.brake ? <TelemetryChart series={telemetry?.series ?? []} metric="brake" /> : null}
-              {visibleSignals.steering ? <TelemetryChart series={telemetry?.series ?? []} metric="steering" /> : null}
-              {visibleSignals.gear ? <TelemetryChart series={telemetry?.series ?? []} metric="gear" /> : null}
-              {visibleSignals.rpm ? <TelemetryChart series={telemetry?.series ?? []} metric="rpm" /> : null}
-              {visibleSignals.delta ? <TelemetryDeltaChart series={telemetry?.series ?? []} /> : null}
+              {visibleSignals.speed ? <TelemetryChart series={telemetrySeries} metric="speed" distanceWindow={distanceWindow} /> : null}
+              {visibleSignals.throttle ? <TelemetryChart series={telemetrySeries} metric="throttle" distanceWindow={distanceWindow} /> : null}
+              {visibleSignals.brake ? <TelemetryChart series={telemetrySeries} metric="brake" distanceWindow={distanceWindow} /> : null}
+              {visibleSignals.steering ? <TelemetryChart series={telemetrySeries} metric="steering" distanceWindow={distanceWindow} /> : null}
+              {visibleSignals.gear ? <TelemetryChart series={telemetrySeries} metric="gear" distanceWindow={distanceWindow} /> : null}
+              {visibleSignals.rpm ? <TelemetryChart series={telemetrySeries} metric="rpm" distanceWindow={distanceWindow} /> : null}
+              {visibleSignals.delta ? (
+                <TelemetryDeltaChart
+                  series={telemetrySeries}
+                  referenceKey={deltaPair.referenceKey}
+                  comparisonKey={deltaPair.comparisonKey}
+                  distanceWindow={distanceWindow}
+                />
+              ) : null}
             </div>
           </section>
 
@@ -582,6 +808,9 @@ export default function DashboardPage() {
               microSectors={telemetry?.micro_sectors ?? []}
               cornerBreakdown={telemetry?.corner_breakdown ?? []}
               performance={telemetry?.performance ?? []}
+              referenceKey={deltaPair.referenceKey}
+              comparisonKey={deltaPair.comparisonKey}
+              focusedCorner={focusedCorner}
             />
           </div>
         </div>

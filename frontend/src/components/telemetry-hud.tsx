@@ -2,6 +2,8 @@ import { TelemetryDriverMetrics } from "@/types/api";
 
 export function TelemetryHud({ metrics }: { metrics: TelemetryDriverMetrics[] }) {
   const cards = metrics.map((item) => ({
+    key: item.series_key,
+    label: item.label,
     driver: item.driver,
     team: item.team,
     color: item.color,
@@ -9,6 +11,7 @@ export function TelemetryHud({ metrics }: { metrics: TelemetryDriverMetrics[] })
     throttle: item.average_throttle,
     brake: item.brake_pct,
     lap: item.fastest_lap_seconds,
+    lapNumber: item.lap_number,
     compound: item.compound,
     drs: item.drs_pct,
   }));
@@ -16,11 +19,12 @@ export function TelemetryHud({ metrics }: { metrics: TelemetryDriverMetrics[] })
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       {cards.map((card, index) => (
-        <article key={card.driver} className="f1-panel mesh-card overflow-hidden rounded-[26px] p-5">
+        <article key={card.key} className="f1-panel mesh-card overflow-hidden rounded-[26px] p-5">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[0.68rem] uppercase tracking-[0.28em] text-zinc-500">{card.team}</p>
               <h3 className="f1-title mt-3 text-2xl">{card.driver}</h3>
+              <p className="mt-2 text-xs uppercase tracking-[0.24em] text-zinc-400">{card.label}</p>
             </div>
             <div className={`radar-ring ${index % 2 === 0 ? "ring-red" : "ring-cyan"}`}>
               <span>{Math.round(card.speed)}</span>
@@ -29,7 +33,9 @@ export function TelemetryHud({ metrics }: { metrics: TelemetryDriverMetrics[] })
           <div className="mt-4 grid gap-3 sm:grid-cols-3">
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2">
               <p className="text-[0.62rem] uppercase tracking-[0.24em] text-zinc-500">Lap</p>
-              <p className="mt-2 text-lg font-semibold text-white">{card.lap ? `${card.lap.toFixed(3)}s` : "--"}</p>
+              <p className="mt-2 text-lg font-semibold text-white">
+                {card.lap ? `L${card.lapNumber ?? "--"} • ${card.lap.toFixed(3)}s` : "--"}
+              </p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2">
               <p className="text-[0.62rem] uppercase tracking-[0.24em] text-zinc-500">Compound</p>

@@ -13,8 +13,11 @@ import {
 
 import { TelemetrySeries } from "@/types/api";
 
-function buildDeltaData(series: TelemetrySeries[]) {
-  const [reference, comparison] = series;
+function buildDeltaData(
+  reference: TelemetrySeries | undefined,
+  comparison: TelemetrySeries | undefined,
+  distanceWindow?: { start: number; end: number } | null,
+) {
   if (!reference || !comparison) {
     return [];
   }
@@ -29,20 +32,41 @@ function buildDeltaData(series: TelemetrySeries[]) {
     };
   });
 
-  return rows;
+  return distanceWindow
+    ? rows.filter((row) => row.distance >= distanceWindow.start && row.distance <= distanceWindow.end)
+    : rows;
 }
 
-export function TelemetryDeltaChart({ series }: { series: TelemetrySeries[] }) {
-  const data = buildDeltaData(series);
-  if (series.length < 2 || !data.length) {
+export function TelemetryDeltaChart({
+  series,
+  referenceKey,
+  comparisonKey,
+  distanceWindow,
+}: {
+  series: TelemetrySeries[];
+  referenceKey?: string | null;
+  comparisonKey?: string | null;
+  distanceWindow?: { start: number; end: number } | null;
+}) {
+  const reference = series.find((item) => item.series_key === referenceKey) ?? series[0];
+  const comparison =
+    series.find((item) => item.series_key === comparisonKey && item.series_key !== reference?.series_key) ??
+    series.find((item) => item.series_key !== reference?.series_key);
+  const data = buildDeltaData(reference, comparison, distanceWindow);
+  if (!reference || !comparison || !data.length) {
     return null;
   }
 
   return (
     <div className="f1-panel h-[280px] rounded-[28px] p-4 sm:p-5">
       <div className="mb-3 flex items-center justify-between">
-        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.3em] text-zinc-500">Delta Trace</p>
-        <p className="text-xs text-zinc-500">Distance-synced lap-time gain and loss against the reference lap</p>
+        <div>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.3em] text-zinc-500">Delta Trace</p>
+          <p className="mt-2 text-xs text-zinc-500">
+            {comparison.label} vs {reference.label}
+          </p>
+        </div>
+        <p className="text-xs text-zinc-500">Distance-synced lap-time gain and loss against the selected reference</p>
       </div>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} syncId="telemetry-sync">

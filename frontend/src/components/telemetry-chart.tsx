@@ -22,12 +22,14 @@ export function TelemetryChart({
   series,
   metric,
   syncId = "telemetry-sync",
+  distanceWindow,
 }: {
   series: TelemetrySeries[];
   metric: ExtendedMetricKey;
   syncId?: string;
+  distanceWindow?: { start: number; end: number } | null;
 }) {
-  const merged =
+  const mergedRows =
     series[0]?.points.map((point, index) => {
       const row: Record<string, string | number> = { distance: point.distance };
       series.forEach((driverSeries) => {
@@ -35,6 +37,14 @@ export function TelemetryChart({
       });
       return row;
     }) ?? [];
+  const merged = distanceWindow
+    ? mergedRows.filter(
+        (row) =>
+          typeof row.distance === "number" &&
+          row.distance >= distanceWindow.start &&
+          row.distance <= distanceWindow.end,
+      )
+    : mergedRows;
 
   return (
     <div className="f1-panel h-[360px] rounded-[28px] p-4 sm:p-5">
