@@ -1,6 +1,6 @@
 # ApexAI Master Record
 
-Last updated: 2026-05-02
+Last updated: 2026-05-10
 
 ## Purpose
 
@@ -34,6 +34,127 @@ The product currently includes:
 - Activity history and saved outputs
 
 ## Chronological Update History
+
+### Phase 15: Telemetry Overlay And Stability Pass
+
+- Fixed the dashboard telemetry request loop that was causing visible flickering and repeated `/api/v1/telemetry` calls whenever lap selections were normalized after each response.
+- Hardened telemetry empty states so dashboard KPIs no longer surface invalid values such as negative infinity when FastF1 telemetry is temporarily unavailable or still loading.
+- Promoted telemetry laps to first-class overlay traces instead of one-lap-per-driver state:
+  - backend now supports multiple explicit lap selections for the same driver in a single request
+  - frontend now stores per-driver lap arrays and sends repeated `lap_selections` query values
+- Added stable telemetry trace identifiers and labels across the telemetry stack:
+  - `series_key` for rendering identity
+  - `label` for display identity such as `George Russell L21`
+- Updated FastF1 telemetry aggregation so selected overlay laps are carried through:
+  - session telemetry loading
+  - metrics generation
+  - micro-sector summaries
+  - corner delta breakdown
+  - smart analytics summaries
+- Reworked telemetry charts and HUD rendering to use per-trace identifiers instead of driver-name-only keys, which prevents collisions when the same driver is shown more than once with different laps.
+- Reworked the telemetry filter UI from a single selected lap dropdown into selectable lap overlay chips, with up to three laps per driver supported in the dashboard workspace.
+- Fixed telemetry-side panel assumptions so richer telemetry payloads remain safe during loading and multi-lap rendering.
+- Verified this pass with:
+  - backend tests: `21 passed`
+  - frontend production build: passed
+
+Technical files changed in this pass:
+
+- `backend/app/services/fastf1_service.py`
+- `backend/app/services/telemetry_service.py`
+- `backend/app/schemas/telemetry.py`
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-chart.tsx`
+- `frontend/src/components/telemetry-hud.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+- `frontend/src/services/api.ts`
+- `frontend/src/types/api.ts`
+
+### Phase 16: Telemetry Inspection Workflow Pass
+
+- Extended the telemetry workspace from “overlay traces exist” to “overlay traces are inspectable”.
+- Added shared telemetry inspection window state to the dashboard so all visible telemetry charts operate on the same focused distance slice.
+- Added quick corner jump controls using the computed corner breakdown data, allowing the user to focus the charts on a specific braking zone and exit sequence without manually scanning the full lap.
+- Added explicit delta pair selection so the delta chart no longer always compares the first two traces implicitly. Users can now choose which reference trace and which comparison trace should drive the delta graph.
+- Added basic zoom and pan controls for the shared telemetry inspection window:
+  - reset to full lap
+  - zoom in
+  - zoom out
+  - shift left
+  - shift right
+- Updated telemetry chart rendering to accept a shared distance window and filter trace rows accordingly, keeping graph navigation aligned across speed, throttle, brake, steering, gear, RPM, and delta charts.
+- Updated the delta chart to compare selected trace pairs by stable overlay identity instead of relying on series order alone.
+- Cleaned up telemetry analysis panel labeling so trace identity is shown as explicit lap overlays rather than ambiguous driver-only labels.
+- Fixed remaining display issues such as telemetry bullet separator encoding so the workspace reads more cleanly.
+
+Technical files changed in this pass:
+
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-chart.tsx`
+- `frontend/src/components/telemetry-delta-chart.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+
+Verification for this pass:
+
+- backend tests: `21 passed`
+- frontend production build: passed
+
+### Phase 17: Telemetry Precision Controls Pass
+
+- Added more precise shared distance-window controls to the telemetry dashboard using manual start and end range sliders.
+- Added a live telemetry window readout so the user can see the exact distance slice being inspected and whether that slice is bound to a focused corner.
+- Added same-driver lap-set comparison summaries in the telemetry side panel so multi-lap overlays are not only visual but analytically summarized.
+- Preserved the shared overlay model and corner navigation workflow while improving the operator’s ability to inspect a subsection of the lap with less guesswork.
+
+Technical files changed in this pass:
+
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+
+Verification for this pass:
+
+- backend tests: `21 passed`
+- frontend production build: passed
+
+### Phase 18: Telemetry Pair Analysis Pass
+
+- Added pair-specific telemetry analysis to the side rail so the currently selected delta pair is summarized in text, not just shown as a line chart.
+- The telemetry side panel now explains:
+  - selected lap gap for the chosen comparison pair
+  - strongest gain corner
+  - largest loss corner
+  - focused-corner entry/apex/exit deltas
+  - braking-point and throttle-pickup distance shifts for the chosen pair
+- This makes the reference/comparison selector materially more useful by turning the selected delta pair into a readable engineering debrief.
+
+Technical files changed in this pass:
+
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+
+Verification for this pass:
+
+- backend tests: `21 passed`
+- frontend production build: passed
+
+### Phase 19: Telemetry Corner Modeling Pass
+
+- Reworked telemetry corner detection on the backend so the dashboard no longer relies on a simple brake-threshold heuristic to find every corner.
+- Corner zones are now detected from a blended activity model using brake pressure, steering load, throttle release, and speed context on the reference lap.
+- Nearby zones are merged, duplicate apexes are filtered out, and corner windows are tightened so entry, apex, and exit timing align more closely with the actual shape of the lap.
+- Entry, apex, and exit deltas now use phase boundaries derived from braking point and throttle pickup distance, which makes pair analysis and focused-corner readouts more believable.
+- Cleaned the telemetry UI text layer so overlay chips, corner shortcuts, and the side analysis rail no longer show garbled bullet characters.
+
+Technical files changed in this pass:
+
+- `backend/app/services/fastf1_service.py`
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+
+Verification for this pass:
+
+- backend tests: `21 passed`
+- frontend production build: passed
 
 ### Phase 1: Initial Project Build
 

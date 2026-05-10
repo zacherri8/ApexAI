@@ -597,6 +597,14 @@ class FastF1Service:
         edges = [max_distance * segment / segments for segment in range(segments + 1)]
         output: list[dict] = []
         reference = series[0]
+        series_metadata = {
+            item["label"]: {
+                "series_key": item["series_key"],
+                "driver": item["driver"],
+                "label": item["label"],
+            }
+            for item in series
+        }
         for segment in range(segments):
             start_distance = edges[segment]
             end_distance = edges[segment + 1]
@@ -615,11 +623,12 @@ class FastF1Service:
             best_time = min(segment_times.values())
             corner_type = self._corner_type_from_speed(segment_speeds.get(reference["label"], min(segment_speeds.values())))
             for driver, time_seconds in segment_times.items():
+                metadata = series_metadata.get(driver, {})
                 output.append(
                     {
-                        "driver": driver,
-                        "label": driver,
-                        "series_key": driver.lower().replace(" ", "-"),
+                        "driver": metadata.get("driver", driver),
+                        "label": metadata.get("label", driver),
+                        "series_key": metadata.get("series_key", driver.lower().replace(" ", "-")),
                         "segment": segment + 1,
                         "start_distance": round(start_distance, 1),
                         "end_distance": round(end_distance, 1),
@@ -635,29 +644,17 @@ class FastF1Service:
             return []
         reference = series[0]
         reference_points = reference["points"]
-        braking_points = [point for point in reference_points if point["brake"] > 15]
-        if not braking_points:
+        zones = self._detect_corner_zones(reference_points)
+        if not zones:
             return []
-
-        zones: list[tuple[int, int]] = []
-        start_index = None
-        for index, point in enumerate(reference_points):
-            if point["brake"] > 15 and start_index is None:
-                start_index = index
-            elif point["brake"] <= 15 and start_index is not None:
-                if index - start_index > 4:
-                    zones.append((start_index, index - 1))
-                start_index = None
-        if start_index is not None and len(reference_points) - start_index > 4:
-            zones.append((start_index, len(reference_points) - 1))
 
         output: list[dict] = []
         for corner_index, (zone_start, zone_end) in enumerate(zones[:8], start=1):
             zone = reference_points[zone_start : zone_end + 1]
             apex_point = min(zone, key=lambda point: point["speed"])
-            start_distance = max(0.0, zone[0]["distance"] - 75)
+            start_distance = max(0.0, zone[0]["distance"] - 50)
             apex_distance = apex_point["distance"]
-            end_distance = min(reference_points[-1]["distance"], zone[-1]["distance"] + 100)
+            end_distance = min(reference_points[-1]["distance"], zone[-1]["distance"] + 70)
             entry_times: dict[str, float] = {}
             apex_times: dict[str, float] = {}
             exit_times: dict[str, float] = {}
@@ -670,11 +667,26 @@ class FastF1Service:
                 exit_time = self._time_at_distance(points, end_distance)
                 if entry_start is None or apex_time is None or exit_time is None:
                     continue
-                entry_times[item["label"]] = max(0.0, apex_time - entry_start)
-                apex_times[item["label"]] = max(0.0, min(0.4, (exit_time - entry_start) / 3))
-                exit_times[item["label"]] = max(0.0, exit_time - apex_time)
-                braking_map[item["label"]] = round(self._braking_point(points, start_distance, apex_distance), 1)
-                throttle_map[item["label"]] = round(self._throttle_pickup(points, apex_distance, end_distance), 1)
+                braking_point = round(self._braking_point(points, start_distance, apex_distance), 1)
+                throttle_pickup = round(self._throttle_pickup(points, apex_distance, end_distance), 1)
+                braking_map[item["label"]] = braking_point
+                throttle_map[item["label"]] = throttle_pickup
+
+                entry_end_distance, apex_end_distance = self._phase_distances(
+                    start_distance,
+                    apex_distance,
+                    end_distance,
+                    braking_point,
+                    throttle_pickup,
+                )
+                entry_end_time = self._time_at_distance(points, entry_end_distance)
+                apex_end_time = self._time_at_distance(points, apex_end_distance)
+                if entry_end_time is None or apex_end_time is None:
+                    continue
+
+                entry_times[item["label"]] = max(0.0, entry_end_time - entry_start)
+                apex_times[item["label"]] = max(0.0, apex_end_time - entry_end_time)
+                exit_times[item["label"]] = max(0.0, exit_time - apex_end_time)
             if not entry_times:
                 continue
             best_entry = min(entry_times.values())
@@ -695,6 +707,70 @@ class FastF1Service:
                 }
             )
         return output
+
+    @staticmethod
+    def _detect_corner_zones(reference_points: list[dict]) -> list[tuple[int, int]]:
+        if not reference_points:
+            return []
+
+        raw_zones: list[tuple[int, int]] = []
+        start_index: int | None = None
+        for index, point in enumerate(reference_points):
+            brake = float(point.get("brake") or 0.0)
+            throttle = float(point.get("throttle") or 0.0)
+            steering = abs(float(point.get("steering") or 0.0))
+            speed = float(point.get("speed") or 0.0)
+            activity = brake > 8 or steering > 16 or (throttle < 45 and speed < 215)
+
+            if activity and start_index is None:
+                start_index = index
+            elif not activity and start_index is not None:
+                if index - start_index >= 4:
+                    raw_zones.append((start_index, index - 1))
+                start_index = None
+
+        if start_index is not None and len(reference_points) - start_index >= 4:
+            raw_zones.append((start_index, len(reference_points) - 1))
+
+        if not raw_zones:
+            return []
+
+        merged: list[tuple[int, int]] = [raw_zones[0]]
+        for zone_start, zone_end in raw_zones[1:]:
+            previous_start, previous_end = merged[-1]
+            if zone_start - previous_end <= 6:
+                merged[-1] = (previous_start, zone_end)
+            else:
+                merged.append((zone_start, zone_end))
+
+        filtered: list[tuple[int, int]] = []
+        last_apex_distance = -1_000.0
+        for zone_start, zone_end in merged:
+            zone = reference_points[zone_start : zone_end + 1]
+            apex_point = min(zone, key=lambda point: point["speed"])
+            apex_distance = float(apex_point["distance"])
+            if apex_distance - last_apex_distance < 120:
+                continue
+            filtered.append((zone_start, zone_end))
+            last_apex_distance = apex_distance
+
+        return filtered
+
+    @staticmethod
+    def _phase_distances(
+        start_distance: float,
+        apex_distance: float,
+        end_distance: float,
+        braking_point: float,
+        throttle_pickup: float,
+    ) -> tuple[float, float]:
+        entry_end = braking_point if start_distance + 8 < braking_point < apex_distance - 5 else start_distance + (apex_distance - start_distance) * 0.55
+        apex_end = throttle_pickup if apex_distance + 5 < throttle_pickup < end_distance - 8 else apex_distance + (end_distance - apex_distance) * 0.45
+
+        entry_end = max(start_distance + 5, min(entry_end, apex_distance - 3))
+        apex_end = max(entry_end + 3, min(apex_end, end_distance - 5))
+
+        return round(entry_end, 1), round(apex_end, 1)
 
     def _build_performance_summary(self, series: list[dict]) -> list[dict]:
         summaries: list[dict] = []
