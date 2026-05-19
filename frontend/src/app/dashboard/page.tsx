@@ -12,6 +12,7 @@ import { TelemetryChart } from "@/components/telemetry-chart";
 import { TelemetryDeltaChart } from "@/components/telemetry-delta-chart";
 import { TelemetryHud } from "@/components/telemetry-hud";
 import { TelemetrySidePanel } from "@/components/telemetry-side-panel";
+import { TelemetryTrackMapPanel } from "@/components/telemetry-track-map";
 import { getSeasonCalendar, getTelemetry, getWeekendContext } from "@/services/api";
 import { SeasonCalendarResponse, TelemetryLapOption, TelemetryResponse, WeekendContextResponse } from "@/types/api";
 
@@ -83,6 +84,10 @@ function clampWindowRange(start: number, end: number, maxDistance: number) {
   return { start: nextStart, end: nextEnd };
 }
 
+function roundInspectionDistance(value: number) {
+  return Math.round(value / 5) * 5;
+}
+
 export default function DashboardPage() {
   const { token } = useAuth();
   const [calendar, setCalendar] = useState<SeasonCalendarResponse | null>(null);
@@ -97,6 +102,7 @@ export default function DashboardPage() {
   const [visibleSignals, setVisibleSignals] = useState<Record<string, boolean>>(defaultSignals);
   const [distanceWindow, setDistanceWindow] = useState<{ start: number; end: number } | null>(null);
   const [focusedCorner, setFocusedCorner] = useState<string | null>(null);
+  const [hoveredDistance, setHoveredDistance] = useState<number | null>(null);
   const [deltaPair, setDeltaPair] = useState<{ referenceKey: string | null; comparisonKey: string | null }>({
     referenceKey: null,
     comparisonKey: null,
@@ -202,6 +208,7 @@ export default function DashboardPage() {
       setDeltaPair({ referenceKey: null, comparisonKey: null });
       setDistanceWindow(null);
       setFocusedCorner(null);
+      setHoveredDistance(null);
       return;
     }
 
@@ -271,7 +278,10 @@ export default function DashboardPage() {
 
   const peakSpeed = useMemo(
     () => {
-      const values = telemetry?.metrics?.map((metric) => metric.top_speed) ?? [];
+      const values =
+        telemetry?.metrics
+          ?.map((metric) => metric.top_speed)
+          .filter((value) => Number.isFinite(value) && value > 0) ?? [];
       if (!values.length) {
         return "--";
       }
@@ -281,7 +291,7 @@ export default function DashboardPage() {
   );
 
   const averageThrottle = useMemo(() => {
-    const metrics = telemetry?.metrics ?? [];
+    const metrics = (telemetry?.metrics ?? []).filter((metric) => Number.isFinite(metric.average_throttle));
     if (!metrics.length) {
       return "0.0";
     }
@@ -303,7 +313,7 @@ export default function DashboardPage() {
   const averageDrs = useMemo(() => {
     const drsValues = (telemetry?.metrics ?? [])
       .map((metric) => metric.drs_pct)
-      .filter((value): value is number => typeof value === "number");
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
     if (!drsValues.length) {
       return "--";
     }
@@ -311,7 +321,7 @@ export default function DashboardPage() {
   }, [telemetry]);
 
   const averageBrake = useMemo(() => {
-    const metrics = telemetry?.metrics ?? [];
+    const metrics = (telemetry?.metrics ?? []).filter((metric) => Number.isFinite(metric.brake_pct));
     if (!metrics.length) {
       return "0%";
     }
@@ -399,6 +409,20 @@ export default function DashboardPage() {
     setDistanceWindow(null);
   }
 
+  function applyDistanceWindow(start: number, end: number) {
+    if (maxDistance <= 0) {
+      return;
+    }
+    setFocusedCorner(null);
+    setDistanceWindow(
+      clampWindowRange(roundInspectionDistance(start), roundInspectionDistance(end), maxDistance),
+    );
+  }
+
+  function updateHoveredDistance(distance: number | null) {
+    setHoveredDistance(distance != null ? roundInspectionDistance(distance) : null);
+  }
+
   function zoomInspection(scale: number) {
     if (maxDistance <= 0) {
       return;
@@ -433,6 +457,26 @@ export default function DashboardPage() {
         <p className="mt-4 max-w-3xl text-base leading-7 text-zinc-400">
           A distance-based telemetry desk with lap overlays, sector intelligence, steering estimation, and corner-by-corner loss analysis pulled from FastF1 session data.
         </p>
+        <div className="mt-5 grid gap-3 xl:grid-cols-3">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-sm text-zinc-300">
+            <p className="text-[0.62rem] font-semibold uppercase tracking-[0.22em] text-zinc-500">Read The Charts</p>
+            <p className="mt-2 leading-6 text-zinc-400">
+              Speed tells you where the lap is carried, brake shows commitment and release, throttle shows exit confidence, and steering exposes correction or hesitation.
+            </p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-sm text-zinc-300">
+            <p className="text-[0.62rem] font-semibold uppercase tracking-[0.22em] text-zinc-500">Read The Delta</p>
+            <p className="mt-2 leading-6 text-zinc-400">
+              Use the delta chart as the lap-time truth. Then validate the reason for the gain or loss by checking the same distance on the speed, brake, and throttle traces.
+            </p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-sm text-zinc-300">
+            <p className="text-[0.62rem] font-semibold uppercase tracking-[0.22em] text-zinc-500">Read The Track</p>
+            <p className="mt-2 leading-6 text-zinc-400">
+              The track navigator links every signal back to physical circuit location, so users can move from abstract telemetry to a real corner discussion.
+            </p>
+          </div>
+        </div>
         <div className="mt-5">
           <DataSourcePanel
             race={session.grandPrix}
@@ -594,6 +638,9 @@ export default function DashboardPage() {
 
             <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <p className="text-[0.68rem] font-semibold uppercase tracking-[0.28em] text-zinc-500">Toggle Graphs</p>
+              <p className="mt-2 text-sm leading-6 text-zinc-400">
+                Turn signals on only when they help answer the question you are asking. For braking studies, hide RPM and gear. For traction studies, keep speed, throttle, steering, and delta visible together.
+              </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {[
                   ["speed", "Speed"],
@@ -716,8 +763,14 @@ export default function DashboardPage() {
                           ? `Focused slice: ${Math.round(distanceWindow.start)}m to ${Math.round(distanceWindow.end)}m${focusedCorner ? ` around ${focusedCorner}` : ""}.`
                           : `Full-lap view across ${Math.round(maxDistance)}m of sampled distance.`}
                       </div>
+                      <div className="mt-2 text-xs text-zinc-400">
+                        {hoveredDistance != null ? `Live cursor: ${Math.round(hoveredDistance)}m` : "Hover a chart to inspect a synchronized live cursor."}
+                      </div>
+                      <div className="mt-2 text-xs leading-5 text-zinc-500">
+                        Drag directly on any telemetry chart or the delta chart to create a tighter inspection window. Smaller windows are best for reading braking shapes, apex speed, and throttle pickup without whole-lap noise.
+                      </div>
                       <div className="mt-4 flex flex-wrap gap-2">
-                        {telemetryCorners.slice(0, 8).map((corner) => (
+                        {telemetryCorners.slice(0, 6).map((corner) => (
                           <button
                             key={corner.corner}
                             className={`rounded-full border px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] transition ${
@@ -784,24 +837,94 @@ export default function DashboardPage() {
               ) : null}
 
               <TelemetryHud metrics={telemetry?.metrics ?? []} />
-              {visibleSignals.speed ? <TelemetryChart series={telemetrySeries} metric="speed" distanceWindow={distanceWindow} /> : null}
-              {visibleSignals.throttle ? <TelemetryChart series={telemetrySeries} metric="throttle" distanceWindow={distanceWindow} /> : null}
-              {visibleSignals.brake ? <TelemetryChart series={telemetrySeries} metric="brake" distanceWindow={distanceWindow} /> : null}
-              {visibleSignals.steering ? <TelemetryChart series={telemetrySeries} metric="steering" distanceWindow={distanceWindow} /> : null}
-              {visibleSignals.gear ? <TelemetryChart series={telemetrySeries} metric="gear" distanceWindow={distanceWindow} /> : null}
-              {visibleSignals.rpm ? <TelemetryChart series={telemetrySeries} metric="rpm" distanceWindow={distanceWindow} /> : null}
+              {visibleSignals.speed ? (
+                <TelemetryChart
+                  series={telemetrySeries}
+                  metric="speed"
+                  distanceWindow={distanceWindow}
+                  onSelectWindow={applyDistanceWindow}
+                  onResetWindow={resetInspectionWindow}
+                  hoveredDistance={hoveredDistance}
+                  onHoverDistance={updateHoveredDistance}
+                />
+              ) : null}
+              {visibleSignals.throttle ? (
+                <TelemetryChart
+                  series={telemetrySeries}
+                  metric="throttle"
+                  distanceWindow={distanceWindow}
+                  onSelectWindow={applyDistanceWindow}
+                  onResetWindow={resetInspectionWindow}
+                  hoveredDistance={hoveredDistance}
+                  onHoverDistance={updateHoveredDistance}
+                />
+              ) : null}
+              {visibleSignals.brake ? (
+                <TelemetryChart
+                  series={telemetrySeries}
+                  metric="brake"
+                  distanceWindow={distanceWindow}
+                  onSelectWindow={applyDistanceWindow}
+                  onResetWindow={resetInspectionWindow}
+                  hoveredDistance={hoveredDistance}
+                  onHoverDistance={updateHoveredDistance}
+                />
+              ) : null}
+              {visibleSignals.steering ? (
+                <TelemetryChart
+                  series={telemetrySeries}
+                  metric="steering"
+                  distanceWindow={distanceWindow}
+                  onSelectWindow={applyDistanceWindow}
+                  onResetWindow={resetInspectionWindow}
+                  hoveredDistance={hoveredDistance}
+                  onHoverDistance={updateHoveredDistance}
+                />
+              ) : null}
+              {visibleSignals.gear ? (
+                <TelemetryChart
+                  series={telemetrySeries}
+                  metric="gear"
+                  distanceWindow={distanceWindow}
+                  onSelectWindow={applyDistanceWindow}
+                  onResetWindow={resetInspectionWindow}
+                  hoveredDistance={hoveredDistance}
+                  onHoverDistance={updateHoveredDistance}
+                />
+              ) : null}
+              {visibleSignals.rpm ? (
+                <TelemetryChart
+                  series={telemetrySeries}
+                  metric="rpm"
+                  distanceWindow={distanceWindow}
+                  onSelectWindow={applyDistanceWindow}
+                  onResetWindow={resetInspectionWindow}
+                  hoveredDistance={hoveredDistance}
+                  onHoverDistance={updateHoveredDistance}
+                />
+              ) : null}
               {visibleSignals.delta ? (
                 <TelemetryDeltaChart
                   series={telemetrySeries}
                   referenceKey={deltaPair.referenceKey}
                   comparisonKey={deltaPair.comparisonKey}
                   distanceWindow={distanceWindow}
+                  onSelectWindow={applyDistanceWindow}
+                  onResetWindow={resetInspectionWindow}
+                  hoveredDistance={hoveredDistance}
+                  onHoverDistance={updateHoveredDistance}
                 />
               ) : null}
             </div>
           </section>
 
-          <div className="reveal-up delay-3">
+          <div className="space-y-4 reveal-up delay-3">
+            <TelemetryTrackMapPanel
+              trackMap={telemetry?.track_map ?? { points: [], corners: [] }}
+              focusedCorner={focusedCorner}
+              hoveredDistance={hoveredDistance}
+              onFocusCorner={focusCorner}
+            />
             <TelemetrySidePanel
               metrics={telemetry?.metrics ?? []}
               lapOptions={telemetry?.lap_options ?? []}
@@ -811,6 +934,9 @@ export default function DashboardPage() {
               referenceKey={deltaPair.referenceKey}
               comparisonKey={deltaPair.comparisonKey}
               focusedCorner={focusedCorner}
+              hoveredDistance={hoveredDistance}
+              series={telemetrySeries}
+              hasWindow={Boolean(distanceWindow)}
             />
           </div>
         </div>

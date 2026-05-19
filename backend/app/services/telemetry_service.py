@@ -59,6 +59,7 @@ class TelemetryService:
             micro_sectors=telemetry_bundle.get("micro_sectors", []) if year and grand_prix and session else [],
             corner_breakdown=telemetry_bundle.get("corner_breakdown", []) if year and grand_prix and session else [],
             performance=telemetry_bundle.get("performance", []) if year and grand_prix and session else [],
+            track_map=telemetry_bundle.get("track_map", {"points": [], "corners": []}) if year and grand_prix and session else {"points": [], "corners": []},
             source=source,
             notice=notice,
             weather=telemetry_bundle.get("weather") if year and grand_prix and session else None,

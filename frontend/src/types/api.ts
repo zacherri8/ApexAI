@@ -92,6 +92,25 @@ export type TelemetryPerformanceSummary = {
   summary: string;
 };
 
+export type TelemetryTrackPoint = {
+  x: number;
+  y: number;
+  distance: number;
+};
+
+export type TelemetryTrackCorner = {
+  corner: string;
+  corner_type: string;
+  distance: number;
+  x: number;
+  y: number;
+};
+
+export type TelemetryTrackMap = {
+  points: TelemetryTrackPoint[];
+  corners: TelemetryTrackCorner[];
+};
+
 export type TelemetryResponse = {
   series: TelemetrySeries[];
   metrics: TelemetryDriverMetrics[];
@@ -100,6 +119,7 @@ export type TelemetryResponse = {
   micro_sectors: TelemetryMicroSector[];
   corner_breakdown: TelemetryCornerBreakdown[];
   performance: TelemetryPerformanceSummary[];
+  track_map: TelemetryTrackMap;
   source: string;
   notice?: string | null;
   weather?: string | null;

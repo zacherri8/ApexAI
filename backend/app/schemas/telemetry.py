@@ -95,6 +95,25 @@ class TelemetryPerformanceSummary(BaseModel):
     summary: str
 
 
+class TelemetryTrackPoint(BaseModel):
+    x: float
+    y: float
+    distance: float
+
+
+class TelemetryTrackCorner(BaseModel):
+    corner: str
+    corner_type: str
+    distance: float
+    x: float
+    y: float
+
+
+class TelemetryTrackMap(BaseModel):
+    points: list[TelemetryTrackPoint] = Field(default_factory=list)
+    corners: list[TelemetryTrackCorner] = Field(default_factory=list)
+
+
 class TelemetryResponse(BaseModel):
     series: list[TelemetrySeries]
     metrics: list[TelemetryDriverMetrics]
@@ -103,6 +122,7 @@ class TelemetryResponse(BaseModel):
     micro_sectors: list[TelemetryMicroSector] = Field(default_factory=list)
     corner_breakdown: list[TelemetryCornerBreakdown] = Field(default_factory=list)
     performance: list[TelemetryPerformanceSummary] = Field(default_factory=list)
+    track_map: TelemetryTrackMap = Field(default_factory=TelemetryTrackMap)
     source: str = "fastf1"
     notice: str | None = None
     weather: str | None = None

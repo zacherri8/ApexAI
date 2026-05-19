@@ -455,6 +455,7 @@ class FastF1Service:
             return None
 
         steering_samples = self._build_steering_samples(lap)
+        track_map_points = self._build_track_map_points(lap, car_data)
         points = self._downsample_telemetry_points(
             [
                 {
@@ -475,7 +476,7 @@ class FastF1Service:
                 if hasattr(getattr(row, "Time", None), "total_seconds")
             ]
         )
-        payload = {"points": points}
+        payload = {"points": points, "track_map_points": track_map_points}
         self._lap_telemetry_cache[key] = payload
         return payload
 
@@ -556,6 +557,83 @@ class FastF1Service:
             samples.insert(0, selected_seconds)
         return samples[:limit]
 
+    @staticmethod
+    def _build_track_map_points(lap, car_data, limit: int = 180) -> list[dict]:
+        get_pos_data = getattr(lap, "get_pos_data", None)
+        if not callable(get_pos_data):
+            return []
+        try:
+            pos_data = get_pos_data()
+        except Exception:  # pragma: no cover
+            return []
+        if pos_data is None or getattr(pos_data, "empty", True):
+            return []
+
+        distance_samples: list[tuple[float, float]] = []
+        for row in car_data.itertuples():
+            timestamp_value = getattr(row, "Time", None)
+            if not hasattr(timestamp_value, "total_seconds"):
+                continue
+            distance_samples.append((float(timestamp_value.total_seconds()), float(getattr(row, "Distance", 0.0))))
+        if len(distance_samples) < 2:
+            return []
+
+        raw_points: list[dict] = []
+        for row in pos_data.itertuples():
+            timestamp_value = getattr(row, "Time", None)
+            if not hasattr(timestamp_value, "total_seconds"):
+                continue
+            time_value = float(timestamp_value.total_seconds())
+            raw_points.append(
+                {
+                    "time": time_value,
+                    "x": float(getattr(row, "X", 0.0)),
+                    "y": float(getattr(row, "Y", 0.0)),
+                    "distance": FastF1Service._interpolate_distance(distance_samples, time_value),
+                }
+            )
+        if len(raw_points) < 5:
+            return []
+
+        xs = [point["x"] for point in raw_points]
+        ys = [point["y"] for point in raw_points]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        span_x = max(max_x - min_x, 1e-6)
+        span_y = max(max_y - min_y, 1e-6)
+
+        normalized = [
+          {
+              "x": round(((point["x"] - min_x) / span_x) * 100, 2),
+              "y": round(100 - ((point["y"] - min_y) / span_y) * 100, 2),
+              "distance": round(point["distance"], 1),
+          }
+          for point in raw_points
+        ]
+
+        if len(normalized) <= limit:
+            return normalized
+        step = max(1, len(normalized) // limit)
+        reduced = normalized[::step]
+        if reduced[-1] != normalized[-1]:
+            reduced.append(normalized[-1])
+        return reduced
+
+    @staticmethod
+    def _interpolate_distance(distance_samples: list[tuple[float, float]], target_time: float) -> float:
+        if target_time <= distance_samples[0][0]:
+            return distance_samples[0][1]
+        if target_time >= distance_samples[-1][0]:
+            return distance_samples[-1][1]
+        for index in range(1, len(distance_samples)):
+            after_time, after_distance = distance_samples[index]
+            before_time, before_distance = distance_samples[index - 1]
+            if after_time >= target_time:
+                span = max(after_time - before_time, 1e-6)
+                ratio = (target_time - before_time) / span
+                return before_distance + (after_distance - before_distance) * ratio
+        return distance_samples[-1][1]
+
     def _compose_telemetry_bundle(
         self,
         race_session,
@@ -575,6 +653,7 @@ class FastF1Service:
         micro_sectors = self._build_micro_sectors(series)
         corner_breakdown = self._build_corner_breakdown(series)
         performance = self._build_performance_summary(series)
+        track_map = self._build_track_map(series, corner_breakdown)
         return {
             "series": series,
             "metrics": metrics,
@@ -583,10 +662,35 @@ class FastF1Service:
             "micro_sectors": micro_sectors,
             "corner_breakdown": corner_breakdown,
             "performance": performance,
+            "track_map": track_map,
             "weather": self._describe_weather(race_session),
             "session_summary": self._build_telemetry_summary(race_session, grand_prix, year, session, telemetry),
             "insights": self._build_telemetry_insights(metrics, None, self._describe_weather(race_session)),
         }
+
+    @staticmethod
+    def _build_track_map(series: list[dict], corner_breakdown: list[dict]) -> dict:
+        if not series:
+            return {"points": [], "corners": []}
+        reference = series[0]
+        points = reference.get("track_map_points") or []
+        if not points:
+            return {"points": [], "corners": []}
+
+        corners: list[dict] = []
+        for corner in corner_breakdown:
+            distance = float(corner["apex_distance"])
+            nearest = min(points, key=lambda point: abs(point["distance"] - distance))
+            corners.append(
+                {
+                    "corner": corner["corner"],
+                    "corner_type": corner["corner_type"],
+                    "distance": round(distance, 1),
+                    "x": nearest["x"],
+                    "y": nearest["y"],
+                }
+            )
+        return {"points": points, "corners": corners}
 
     def _build_micro_sectors(self, series: list[dict], segments: int = 12) -> list[dict]:
         if not series:
@@ -694,7 +798,7 @@ class FastF1Service:
             best_exit = min(exit_times.values())
             output.append(
                 {
-                    "corner": f"C{corner_index}",
+                    "corner": f"T{corner_index}",
                     "corner_type": self._corner_type_from_speed(apex_point["speed"]),
                     "start_distance": round(start_distance, 1),
                     "apex_distance": round(apex_distance, 1),

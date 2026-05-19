@@ -1,6 +1,6 @@
 # ApexAI Master Record
 
-Last updated: 2026-05-10
+Last updated: 2026-05-19
 
 ## Purpose
 
@@ -150,6 +150,113 @@ Technical files changed in this pass:
 - `backend/app/services/fastf1_service.py`
 - `frontend/src/app/dashboard/page.tsx`
 - `frontend/src/components/telemetry-side-panel.tsx`
+
+Verification for this pass:
+
+- backend tests: `21 passed`
+- frontend production build: passed
+
+### Phase 20: Telemetry Interaction Pass
+
+- Rebuilt the main telemetry chart component and the delta chart component to support direct drag-to-zoom interaction on the plots themselves.
+- The shared inspection window can now be created by dragging across any telemetry chart or the delta chart, and double-clicking resets the focused window.
+- Wired those chart interactions back into the dashboard-level distance window state so every telemetry panel stays synchronized.
+- Expanded same-driver overlay review in the side rail with average lap, set spread, and best consistency summaries, which makes multi-lap same-driver analysis much more useful.
+
+Technical files changed in this pass:
+
+- `frontend/src/components/telemetry-chart.tsx`
+- `frontend/src/components/telemetry-delta-chart.tsx`
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+
+Verification for this pass:
+
+- backend tests: `21 passed`
+- frontend production build: passed
+
+### Phase 21: Telemetry Shared Cursor Pass
+
+- Added a synchronized live cursor across the telemetry workspace so hovering any telemetry chart or the delta chart creates a shared inspection position.
+- Each chart now shows a shared vertical reference line at the active hover distance, which makes cross-chart reading much easier.
+- The dashboard now exposes a live cursor distance readout in the inspection controls.
+- The telemetry side rail now includes a `Live Cursor Readout` section that shows per-trace speed, throttle, brake, gear, RPM, and steering values at the hovered distance.
+- This makes the telemetry page behave much more like a real linked-cursor analysis desk instead of a set of independent charts.
+
+Technical files changed in this pass:
+
+- `frontend/src/components/telemetry-chart.tsx`
+- `frontend/src/components/telemetry-delta-chart.tsx`
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+
+Verification for this pass:
+
+- backend tests: `21 passed`
+- frontend production build: passed
+
+### Phase 22: Telemetry Track Navigator Pass
+
+- Added a real telemetry track map payload to the backend, derived from FastF1 lap position data and aligned to lap distance.
+- The telemetry response now includes:
+  - normalized reference-lap track points
+  - corner markers placed at apex distances
+  - track-aware corner positions for frontend navigation
+- Replaced generic `C1`, `C2`-style corner naming with `T1`, `T2`, and so on, so the analysis reads more naturally.
+- Added a `Track Navigator` panel to the dashboard:
+  - clickable corner markers
+  - highlighted focused corner
+  - live cursor marker that follows the shared chart hover distance
+- This makes the telemetry workspace spatial as well as numerical, which is a major step toward a real race-engineering desk.
+
+Technical files changed in this pass:
+
+- `backend/app/schemas/telemetry.py`
+- `backend/app/services/fastf1_service.py`
+- `backend/app/services/telemetry_service.py`
+- `frontend/src/types/api.ts`
+- `frontend/src/components/telemetry-track-map.tsx`
+- `frontend/src/app/dashboard/page.tsx`
+
+Verification for this pass:
+
+- backend tests: `21 passed`
+- frontend production build: passed
+
+### Phase 23: Telemetry Interpretation Pass
+
+- Reworked the telemetry side rail so it no longer behaves like a raw stats dump. It now explains how to read the workspace in operator language, section by section.
+- Added a new `How To Read This Workspace` section to the telemetry rail that teaches users:
+  - when to trust a whole-lap view
+  - when to zoom into a focused slice
+  - how to use the live cursor
+  - how to interpret the selected delta pair
+- Expanded the explanation copy across the telemetry rail:
+  - `Performance Snapshot` now explains ideal lap, lap delta, and reference-lap meaning
+  - `Selected Laps` explains why lap identity matters before judging pace
+  - `Live Cursor Readout` now explains how to compare speed, brake, throttle, steering, gear, and RPM at the same distance point
+  - `Same-Driver Lap Set Review` now frames spread and consistency as repeatability checks
+  - `Delta Pair Review` now explains gain/loss logic, corner priority, and entry/apex/exit meaning
+  - `Sector And Micro-Sector Analysis` now explains how to use broad sectors versus smaller distance slices
+  - `Corner Loss Breakdown` now defines entry, apex, and exit in plain language
+  - `Smart Analytics` now explicitly states that these are heuristics derived from FastF1-backed telemetry, not direct feed fields
+- Added a top-level telemetry reading guide to the dashboard hero so users understand how to read charts, delta, and the track navigator before diving into the workspace.
+- Added explanatory copy to:
+  - telemetry signal charts
+  - delta chart
+  - track navigator
+  - graph toggle controls
+  - focused inspection window controls
+- Hardened telemetry KPI summaries so invalid values such as `-Infinity km/h` do not surface when FastF1 returns incomplete session metrics or the page is still transitioning through loading states.
+- Cleaned up remaining UI text artifacts and replaced broken encoded symbols in the telemetry workspace with stable plain-text formatting.
+
+Technical files changed in this pass:
+
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-chart.tsx`
+- `frontend/src/components/telemetry-delta-chart.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+- `frontend/src/components/telemetry-track-map.tsx`
 
 Verification for this pass:
 
