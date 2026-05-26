@@ -71,6 +71,7 @@ export function TelemetryTrackMapPanel({
             />
             {trackMap.corners.map((corner) => (
               <g key={corner.corner} className="cursor-pointer" onClick={() => onFocusCorner?.(corner.corner)}>
+                <title>{corner.corner_hint || corner.corner_label || corner.corner}</title>
                 <circle
                   cx={corner.x}
                   cy={corner.y}
@@ -112,8 +113,9 @@ export function TelemetryTrackMapPanel({
             }`}
             onClick={() => onFocusCorner?.(corner.corner)}
             type="button"
+            title={corner.corner_hint || corner.corner_label || corner.corner}
           >
-            {`${corner.corner} / ${corner.corner_type}`}
+            {`${corner.corner_label || corner.corner} / ${corner.corner_type}`}
           </button>
         ))}
       </div>

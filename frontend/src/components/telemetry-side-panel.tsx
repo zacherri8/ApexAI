@@ -109,6 +109,47 @@ function summarizeLapSetConsistency(
   return { spread, averageLap, bestConsistency };
 }
 
+function cornerDisplayName(corner: Pick<TelemetryCornerBreakdown, "corner" | "corner_label">) {
+  return corner.corner_label || corner.corner;
+}
+
+function buildLapBenchmarkRanking(
+  metrics: TelemetryDriverMetrics[],
+  performance: TelemetryPerformanceSummary[],
+  cornerBreakdown: TelemetryCornerBreakdown[],
+) {
+  const performanceByKey = new Map(performance.map((item) => [item.series_key, item]));
+  const timedMetrics = metrics
+    .filter((metric) => typeof metric.fastest_lap_seconds === "number")
+    .sort((left, right) => (left.fastest_lap_seconds ?? Infinity) - (right.fastest_lap_seconds ?? Infinity));
+  const bestLap = timedMetrics[0]?.fastest_lap_seconds ?? null;
+
+  return timedMetrics.map((metric, index) => {
+    const cornerTotals = cornerBreakdown.map((corner) => ({
+      corner,
+      total:
+        (corner.entry_delta[metric.label] ?? 0) +
+        (corner.apex_delta[metric.label] ?? 0) +
+        (corner.exit_delta[metric.label] ?? 0),
+    }));
+    const biggestDeficit = [...cornerTotals].sort((left, right) => right.total - left.total)[0];
+    const bestCorner = [...cornerTotals].sort((left, right) => left.total - right.total)[0];
+    const performanceItem = performanceByKey.get(metric.series_key);
+
+    return {
+      metric,
+      rank: performanceItem?.lap_rank ?? index + 1,
+      deltaToBest:
+        performanceItem?.delta_to_best_seconds ??
+        (bestLap != null && metric.fastest_lap_seconds != null ? metric.fastest_lap_seconds - bestLap : null),
+      biggestDeficit: biggestDeficit?.total > 0.02 ? biggestDeficit : null,
+      bestCorner: bestCorner && bestCorner.total <= 0.01 ? bestCorner : null,
+      coachingFocus: performanceItem?.coaching_focus,
+      benchmarkSummary: performanceItem?.benchmark_summary,
+    };
+  });
+}
+
 function buildDeltaPairReview(
   metrics: TelemetryDriverMetrics[],
   cornerBreakdown: TelemetryCornerBreakdown[],
@@ -145,6 +186,8 @@ function buildDeltaPairReview(
         entry: comparisonEntry - referenceEntry,
         apex: comparisonApex - referenceApex,
         exit: comparisonExit - referenceExit,
+        label: cornerDisplayName(corner),
+        hint: corner.corner_hint,
         brakingDelta:
           (corner.braking_points[comparison.label] ?? 0) - (corner.braking_points[reference.label] ?? 0),
         throttleDelta:
@@ -261,6 +304,7 @@ export function TelemetrySidePanel({
     hoveredDistance,
     Boolean(deltaPairReview),
   );
+  const lapBenchmarkRanking = buildLapBenchmarkRanking(metrics, performance, cornerBreakdown);
 
   return (
     <aside className="space-y-4">
@@ -323,6 +367,51 @@ export function TelemetrySidePanel({
           </div>
         </div>
       </div>
+
+      {lapBenchmarkRanking.length ? (
+        <div className="f1-panel rounded-[28px] p-4 sm:p-5">
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.3em] text-zinc-500">
+            Lap Benchmark Ranking
+          </p>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">
+            This ranks only the selected traces, so it behaves like a benchmark table for the laps currently
+            on screen. Use the corner note to jump straight from ranking to the reason behind the gap.
+          </p>
+          <div className="mt-4 space-y-3">
+            {lapBenchmarkRanking.map((row) => (
+              <div key={row.metric.series_key} className="rounded-2xl border border-white/10 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-white">
+                      P{row.rank} {row.metric.label}
+                    </div>
+                    <div className="mt-1 text-[0.68rem] uppercase tracking-[0.18em] text-zinc-500">
+                      {formatSeconds(row.metric.fastest_lap_seconds)} /{" "}
+                      {row.deltaToBest != null ? `${formatSignedSeconds(row.deltaToBest)} to best` : "gap unavailable"}
+                    </div>
+                  </div>
+                  <div className="text-right text-[0.68rem] uppercase tracking-[0.18em] text-zinc-500">
+                    {row.metric.compound ?? "N/A"}
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-2 text-xs leading-5 text-zinc-400">
+                  <div>{row.benchmarkSummary ?? "Benchmark summary unavailable for this trace."}</div>
+                  <div>
+                    {row.biggestDeficit
+                      ? `Main loss: ${cornerDisplayName(row.biggestDeficit.corner)} (${formatSignedSeconds(
+                          row.biggestDeficit.total,
+                        )}).`
+                      : row.bestCorner
+                        ? `Best matched corner: ${cornerDisplayName(row.bestCorner.corner)}.`
+                        : "Corner losses are evenly spread across the selected trace."}
+                  </div>
+                  {row.coachingFocus ? <div>Coaching cue: {row.coachingFocus}</div> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="f1-panel rounded-[28px] p-4 sm:p-5">
         <p className="text-[0.68rem] font-semibold uppercase tracking-[0.3em] text-zinc-500">Selected Laps</p>
@@ -464,7 +553,7 @@ export function TelemetrySidePanel({
             {deltaPairReview.strongestGain ? (
               <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-xs leading-5 text-emerald-100">
                 Strongest gain: {deltaPairReview.comparison.driver} looks best at{" "}
-                {deltaPairReview.strongestGain.corner} ({deltaPairReview.strongestGain.cornerType}) with{" "}
+                {deltaPairReview.strongestGain.label} ({deltaPairReview.strongestGain.cornerType}) with{" "}
                 {deltaPairReview.strongestGain.total.toFixed(3)}s relative swing. This is the corner to study
                 first when searching for free lap time.
               </div>
@@ -472,7 +561,7 @@ export function TelemetrySidePanel({
             {deltaPairReview.largestLoss ? (
               <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-xs leading-5 text-red-100">
                 Largest loss: {deltaPairReview.comparison.driver} gives away the most at{" "}
-                {deltaPairReview.largestLoss.corner} ({deltaPairReview.largestLoss.cornerType}) with{" "}
+                {deltaPairReview.largestLoss.label} ({deltaPairReview.largestLoss.cornerType}) with{" "}
                 {formatSignedSeconds(deltaPairReview.largestLoss.total)}. This is where the comparison trace is
                 most at risk.
               </div>
@@ -482,7 +571,13 @@ export function TelemetrySidePanel({
                 <div className="text-[0.62rem] uppercase tracking-[0.22em] text-zinc-500">
                   {focusedCorner ? `Focused Corner: ${focusedCorner}` : "Priority Corner"}
                 </div>
+                <div className="mt-2 text-sm font-medium text-white">
+                  {deltaPairReview.focusCornerRow.label}
+                </div>
                 <div className="mt-2 text-xs leading-5 text-zinc-400">
+                  {deltaPairReview.focusCornerRow.hint
+                    ? `${deltaPairReview.focusCornerRow.hint}. `
+                    : ""}
                   Entry reflects initial braking and rotation, apex reflects minimum-speed behavior, and exit
                   reflects traction and throttle pickup quality.
                 </div>
@@ -552,9 +647,12 @@ export function TelemetrySidePanel({
           {cornerBreakdown.slice(0, 4).map((corner) => (
             <div key={corner.corner} className="rounded-2xl border border-white/10 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium text-white">{corner.corner}</span>
+                <span className="text-sm font-medium text-white">{cornerDisplayName(corner)}</span>
                 <span className="text-xs uppercase tracking-[0.22em] text-zinc-500">{corner.corner_type}</span>
               </div>
+              {corner.corner_hint ? (
+                <div className="mt-2 text-xs leading-5 text-zinc-500">{corner.corner_hint}</div>
+              ) : null}
               <div className="mt-3 grid gap-3">
                 <div>
                   <div className="text-[0.62rem] uppercase tracking-[0.22em] text-zinc-500">Entry</div>
@@ -593,6 +691,8 @@ export function TelemetrySidePanel({
               </div>
               <div className="mt-2 text-xs leading-5 text-zinc-400">{item.summary}</div>
               <div className="mt-3 grid gap-2 text-xs text-zinc-300">
+                {item.benchmark_summary ? <div>Benchmark: {item.benchmark_summary}</div> : null}
+                {item.coaching_focus ? <div>Coaching focus: {item.coaching_focus}</div> : null}
                 <div>Brake style: {item.braking_style}</div>
                 <div>Throttle style: {item.throttle_style}</div>
                 <div>Corner profile: {item.corner_profile}</div>

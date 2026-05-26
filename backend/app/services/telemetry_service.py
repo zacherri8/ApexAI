@@ -28,13 +28,17 @@ class TelemetryService:
             source = "fastf1" if raw_series else "fastf1-unavailable"
             notice = None if raw_series else (
                 f"FastF1 did not return telemetry for {grand_prix} {year} {session}. "
+                f"Reason: {telemetry_bundle.get('unavailable_reason') or 'telemetry_unavailable'}. "
                 "No local telemetry substitute is being injected."
             )
+            unavailable_reason = telemetry_bundle.get("unavailable_reason")
         else:
+            telemetry_bundle = {}
             raw_series = []
             raw_metrics = []
             source = "fastf1-unavailable"
             notice = "A season, Grand Prix, and session must be provided to load FastF1 telemetry."
+            unavailable_reason = "missing_required_query"
         series = [
             TelemetrySeries(
                 series_key=item["series_key"],
@@ -59,9 +63,13 @@ class TelemetryService:
             micro_sectors=telemetry_bundle.get("micro_sectors", []) if year and grand_prix and session else [],
             corner_breakdown=telemetry_bundle.get("corner_breakdown", []) if year and grand_prix and session else [],
             performance=telemetry_bundle.get("performance", []) if year and grand_prix and session else [],
+            benchmark_rankings=telemetry_bundle.get("benchmark_rankings", []) if year and grand_prix and session else [],
+            pair_deltas=telemetry_bundle.get("pair_deltas", []) if year and grand_prix and session else [],
             track_map=telemetry_bundle.get("track_map", {"points": [], "corners": []}) if year and grand_prix and session else {"points": [], "corners": []},
+            cache_metadata=telemetry_bundle.get("cache_metadata", {}) if year and grand_prix and session else {"unavailable_reason": unavailable_reason},
             source=source,
             notice=notice,
+            unavailable_reason=unavailable_reason,
             weather=telemetry_bundle.get("weather") if year and grand_prix and session else None,
             session_summary=telemetry_bundle.get("session_summary") if year and grand_prix and session else None,
             insights=telemetry_bundle.get("insights", []) if year and grand_prix and session else [],

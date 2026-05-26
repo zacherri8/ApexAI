@@ -69,7 +69,12 @@ export type TelemetryMicroSector = {
 
 export type TelemetryCornerBreakdown = {
   corner: string;
+  corner_label?: string | null;
+  corner_hint?: string | null;
+  official_corner_name?: string | null;
   corner_type: string;
+  confidence_score?: number | null;
+  segmentation_quality?: string | null;
   start_distance: number;
   apex_distance: number;
   end_distance: number;
@@ -84,11 +89,55 @@ export type TelemetryPerformanceSummary = {
   series_key: string;
   label: string;
   driver: string;
+  lap_rank?: number | null;
+  delta_to_best_seconds?: number | null;
+  benchmark_summary?: string | null;
+  coaching_focus?: string | null;
   braking_style: string;
   throttle_style: string;
   corner_profile: string;
   consistency_score: number;
   mistakes: string[];
+  summary: string;
+};
+
+export type TelemetryBenchmarkRanking = {
+  series_key: string;
+  label: string;
+  driver: string;
+  overall_rank?: number | null;
+  lap_delta_to_best?: number | null;
+  braking_rank?: number | null;
+  apex_rank?: number | null;
+  exit_rank?: number | null;
+  straight_line_rank?: number | null;
+  consistency_rank?: number | null;
+  main_loss_corner?: string | null;
+  main_loss_seconds?: number | null;
+  summary: string;
+};
+
+export type TelemetryPairCornerDelta = {
+  corner: string;
+  corner_label?: string | null;
+  corner_type: string;
+  total_delta: number;
+  entry_delta: number;
+  apex_delta: number;
+  exit_delta: number;
+  braking_point_delta?: number | null;
+  throttle_pickup_delta?: number | null;
+};
+
+export type TelemetryPairDelta = {
+  reference_series_key: string;
+  reference_label: string;
+  comparison_series_key: string;
+  comparison_label: string;
+  lap_delta?: number | null;
+  corner_deltas: TelemetryPairCornerDelta[];
+  biggest_gain_corner?: string | null;
+  biggest_loss_corner?: string | null;
   summary: string;
 };
 
@@ -100,7 +149,11 @@ export type TelemetryTrackPoint = {
 
 export type TelemetryTrackCorner = {
   corner: string;
+  corner_label?: string | null;
+  corner_hint?: string | null;
+  official_corner_name?: string | null;
   corner_type: string;
+  confidence_score?: number | null;
   distance: number;
   x: number;
   y: number;
@@ -111,6 +164,15 @@ export type TelemetryTrackMap = {
   corners: TelemetryTrackCorner[];
 };
 
+export type TelemetryCacheMetadata = {
+  cache_hit: boolean;
+  cache_key?: string | null;
+  generated_at?: string | null;
+  series_count: number;
+  unavailable_reason?: string | null;
+  diagnostics: string[];
+};
+
 export type TelemetryResponse = {
   series: TelemetrySeries[];
   metrics: TelemetryDriverMetrics[];
@@ -119,9 +181,13 @@ export type TelemetryResponse = {
   micro_sectors: TelemetryMicroSector[];
   corner_breakdown: TelemetryCornerBreakdown[];
   performance: TelemetryPerformanceSummary[];
+  benchmark_rankings: TelemetryBenchmarkRanking[];
+  pair_deltas: TelemetryPairDelta[];
   track_map: TelemetryTrackMap;
+  cache_metadata: TelemetryCacheMetadata;
   source: string;
   notice?: string | null;
+  unavailable_reason?: string | null;
   weather?: string | null;
   session_summary?: string | null;
   insights: string[];

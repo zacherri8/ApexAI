@@ -37,6 +37,66 @@ class FastF1Service:
         "Sauber": "#52e252",
         "Haas": "#b6babd",
     }
+    official_corner_names = {
+        "silverstone": {
+            1: "Abbey",
+            2: "Farm Curve",
+            3: "Village",
+            4: "The Loop",
+            5: "Aintree",
+            6: "Brooklands",
+            7: "Luffield",
+            8: "Copse",
+        },
+        "monza": {
+            1: "Rettifilo",
+            2: "Curva Grande",
+            3: "Roggia",
+            4: "Lesmo 1",
+            5: "Lesmo 2",
+            6: "Ascari",
+            7: "Parabolica",
+        },
+        "monaco": {
+            1: "Sainte Devote",
+            2: "Beau Rivage",
+            3: "Massenet",
+            4: "Casino",
+            5: "Mirabeau",
+            6: "Grand Hotel Hairpin",
+            7: "Portier",
+            8: "Nouvelle Chicane",
+        },
+        "australian": {
+            1: "Jones",
+            2: "Brabham",
+            3: "Whiteford",
+            4: "Marina",
+            5: "Lauda",
+            6: "Clark",
+            7: "Waite",
+            8: "Hill",
+        },
+        "bahrain": {
+            1: "Turn 1",
+            2: "Turn 4",
+            3: "Turn 8",
+            4: "Turn 10",
+            5: "Turn 11",
+            6: "Turn 13",
+            7: "Turn 14",
+        },
+        "spa": {
+            1: "La Source",
+            2: "Eau Rouge",
+            3: "Raidillon",
+            4: "Les Combes",
+            5: "Bruxelles",
+            6: "Pouhon",
+            7: "Stavelot",
+            8: "Bus Stop",
+        },
+    }
 
     def __init__(self, db: Session | None) -> None:
         self.repository = F1Repository(db) if db is not None else None
@@ -273,20 +333,29 @@ class FastF1Service:
         lap_selection_key = tuple(sorted(lap_selections or []))
         key = self._session_key(year, grand_prix, session) + (selected_driver_key, lap_selection_key)
         if key in self._session_telemetry_cache:
-            return self._session_telemetry_cache[key]
+            return self._mark_telemetry_cache_hit(self._session_telemetry_cache[key])
         if not fastf1:
-            self._session_telemetry_cache[key] = self._empty_telemetry_bundle()
+            self._session_telemetry_cache[key] = self._empty_telemetry_bundle(
+                "fastf1_not_installed",
+                ["FastF1 is not importable in this backend environment."],
+                self._telemetry_cache_key(year, grand_prix, session, selected_driver_key, lap_selection_key),
+            )
             return self._session_telemetry_cache[key]
 
         race_session = self._load_session(year, grand_prix, session)
         if not race_session:
-            self._session_telemetry_cache[key] = self._empty_telemetry_bundle()
+            self._session_telemetry_cache[key] = self._empty_telemetry_bundle(
+                "session_unavailable",
+                [f"FastF1 could not load {grand_prix} {year} {session}."],
+                self._telemetry_cache_key(year, grand_prix, session, selected_driver_key, lap_selection_key),
+            )
             return self._session_telemetry_cache[key]
 
         selected_lookup = self._parse_lap_selection_entries(lap_selections)
         telemetry: list[dict] = []
         available_drivers: list[str] = []
         lap_options: list[dict] = []
+        diagnostics: list[str] = []
         for index, driver_code in enumerate(race_session.drivers, start=1):
             try:
                 driver_info = race_session.get_driver(driver_code)
@@ -303,17 +372,21 @@ class FastF1Service:
                 driver_laps = race_session.laps.pick_drivers(driver_code)
                 driver_laps = driver_laps[driver_laps["LapTime"].notna()].sort_values("LapTime")
                 if driver_laps.empty:
+                    diagnostics.append(f"No timed laps available for {full_name}.")
                     continue
                 selected_laps = self._pick_selected_laps(driver_laps, selected_lookup, full_name, str(driver_code))
                 if not selected_laps:
+                    diagnostics.append(f"No selected lap matched for {full_name}.")
                     continue
                 lap_options.extend(self._build_lap_options(driver_laps, full_name))
                 for selected_lap in selected_laps:
                     lap_payload = self._build_lap_payload(year, grand_prix, session, driver_code, selected_lap)
                     if not lap_payload:
+                        diagnostics.append(f"Telemetry stream missing for {full_name} lap {int(getattr(selected_lap, 'LapNumber', 0) or 0)}.")
                         continue
                     points = lap_payload["points"]
                     if not points:
+                        diagnostics.append(f"Telemetry stream returned no samples for {full_name} lap {int(getattr(selected_lap, 'LapNumber', 0) or 0)}.")
                         continue
                     lap_number = int(getattr(selected_lap, "LapNumber", 0) or 0) or None
                     lap_time_seconds = self._lap_seconds(getattr(selected_lap, "LapTime", None))
@@ -331,6 +404,7 @@ class FastF1Service:
                             "compound": str(getattr(selected_lap, "Compound", "") or "") or None,
                             "is_reference": False,
                             "points": points,
+                            "track_map_points": lap_payload.get("track_map_points", []),
                             "metrics": self._build_telemetry_metrics(
                                 series_key,
                                 label,
@@ -344,7 +418,9 @@ class FastF1Service:
                         }
                     )
             except Exception:  # pragma: no cover - FastF1 session irregularities
+                diagnostics.append(f"FastF1 could not process driver {driver_code}.")
                 continue
+        unavailable_reason = self._telemetry_unavailable_reason(telemetry, available_drivers, selected_drivers)
         payload = self._compose_telemetry_bundle(
             race_session,
             grand_prix,
@@ -353,6 +429,9 @@ class FastF1Service:
             telemetry,
             available_drivers,
             lap_options,
+            diagnostics,
+            unavailable_reason,
+            self._telemetry_cache_key(year, grand_prix, session, selected_driver_key, lap_selection_key),
         )
         self._session_telemetry_cache[key] = payload
         return payload
@@ -643,6 +722,9 @@ class FastF1Service:
         telemetry: list[dict],
         available_drivers: list[str],
         lap_options: list[dict],
+        diagnostics: list[str] | None = None,
+        unavailable_reason: str | None = None,
+        cache_key: str | None = None,
     ) -> dict:
         series = list(telemetry)
         series.sort(key=lambda item: item["metrics"]["fastest_lap_seconds"] or float("inf"))
@@ -651,8 +733,10 @@ class FastF1Service:
 
         metrics = [item["metrics"] for item in series]
         micro_sectors = self._build_micro_sectors(series)
-        corner_breakdown = self._build_corner_breakdown(series)
-        performance = self._build_performance_summary(series)
+        corner_breakdown = self._build_corner_breakdown(series, grand_prix)
+        performance = self._build_performance_summary(series, corner_breakdown)
+        benchmark_rankings = self._build_benchmark_rankings(series, corner_breakdown)
+        pair_deltas = self._build_pair_deltas(series, corner_breakdown)
         track_map = self._build_track_map(series, corner_breakdown)
         return {
             "series": series,
@@ -662,10 +746,21 @@ class FastF1Service:
             "micro_sectors": micro_sectors,
             "corner_breakdown": corner_breakdown,
             "performance": performance,
+            "benchmark_rankings": benchmark_rankings,
+            "pair_deltas": pair_deltas,
             "track_map": track_map,
             "weather": self._describe_weather(race_session),
             "session_summary": self._build_telemetry_summary(race_session, grand_prix, year, session, telemetry),
             "insights": self._build_telemetry_insights(metrics, None, self._describe_weather(race_session)),
+            "unavailable_reason": unavailable_reason,
+            "cache_metadata": {
+                "cache_hit": False,
+                "cache_key": cache_key,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "series_count": len(series),
+                "unavailable_reason": unavailable_reason,
+                "diagnostics": diagnostics or [],
+            },
         }
 
     @staticmethod
@@ -684,7 +779,11 @@ class FastF1Service:
             corners.append(
                 {
                     "corner": corner["corner"],
+                    "corner_label": corner.get("corner_label"),
+                    "corner_hint": corner.get("corner_hint"),
+                    "official_corner_name": corner.get("official_corner_name"),
                     "corner_type": corner["corner_type"],
+                    "confidence_score": corner.get("confidence_score"),
                     "distance": round(distance, 1),
                     "x": nearest["x"],
                     "y": nearest["y"],
@@ -743,7 +842,7 @@ class FastF1Service:
                 )
         return output
 
-    def _build_corner_breakdown(self, series: list[dict]) -> list[dict]:
+    def _build_corner_breakdown(self, series: list[dict], grand_prix: str | None = None) -> list[dict]:
         if not series:
             return []
         reference = series[0]
@@ -759,6 +858,8 @@ class FastF1Service:
             start_distance = max(0.0, zone[0]["distance"] - 50)
             apex_distance = apex_point["distance"]
             end_distance = min(reference_points[-1]["distance"], zone[-1]["distance"] + 70)
+            confidence = self._corner_confidence(zone, start_distance, apex_distance, end_distance)
+            official_name = self._official_corner_name(grand_prix or "", corner_index)
             entry_times: dict[str, float] = {}
             apex_times: dict[str, float] = {}
             exit_times: dict[str, float] = {}
@@ -799,7 +900,12 @@ class FastF1Service:
             output.append(
                 {
                     "corner": f"T{corner_index}",
+                    "corner_label": self._corner_label(corner_index, apex_point, start_distance, end_distance, official_name),
+                    "corner_hint": self._corner_hint(apex_point, start_distance, end_distance, official_name),
+                    "official_corner_name": official_name,
                     "corner_type": self._corner_type_from_speed(apex_point["speed"]),
+                    "confidence_score": confidence,
+                    "segmentation_quality": self._segmentation_quality(confidence),
                     "start_distance": round(start_distance, 1),
                     "apex_distance": round(apex_distance, 1),
                     "end_distance": round(end_distance, 1),
@@ -876,8 +982,16 @@ class FastF1Service:
 
         return round(entry_end, 1), round(apex_end, 1)
 
-    def _build_performance_summary(self, series: list[dict]) -> list[dict]:
+    def _build_performance_summary(self, series: list[dict], corner_breakdown: list[dict] | None = None) -> list[dict]:
         summaries: list[dict] = []
+        ranked_series = sorted(
+            [item for item in series if item["metrics"].get("fastest_lap_seconds") is not None],
+            key=lambda item: item["metrics"]["fastest_lap_seconds"],
+        )
+        rank_by_label = {item["label"]: index + 1 for index, item in enumerate(ranked_series)}
+        best_lap = ranked_series[0]["metrics"]["fastest_lap_seconds"] if ranked_series else None
+        corner_focus = self._corner_focus_by_label(corner_breakdown or [])
+
         for item in series:
             metric = item["metrics"]
             lap_samples = item.get("lap_samples", [])
@@ -886,23 +1000,286 @@ class FastF1Service:
             throttle_style = "Early throttle" if metric["average_throttle"] >= 72 else "Measured throttle" if metric["average_throttle"] >= 60 else "Late throttle"
             corner_profile = self._dominant_corner_profile(item["points"])
             mistakes = self._detect_mistakes(item["points"], metric, consistency)
+            lap_time = metric.get("fastest_lap_seconds")
+            lap_rank = rank_by_label.get(item["label"])
+            delta_to_best = round(lap_time - best_lap, 3) if lap_time is not None and best_lap is not None else None
+            focus = corner_focus.get(item["label"])
+            if focus:
+                mistakes.append(f"Benchmark deficit peaks at {focus['corner_label']}")
+            coaching_focus = self._coaching_focus(metric, focus, braking_style, throttle_style)
+            benchmark_summary = (
+                f"P{lap_rank} of {len(ranked_series)} selected traces"
+                + (f", {delta_to_best:+.3f}s to the benchmark lap." if delta_to_best is not None else ".")
+                if lap_rank
+                else "Lap benchmark rank unavailable for this trace."
+            )
             summaries.append(
                 {
                     "series_key": item["series_key"],
                     "label": item["label"],
                     "driver": item["driver"],
+                    "lap_rank": lap_rank,
+                    "delta_to_best_seconds": delta_to_best,
+                    "benchmark_summary": benchmark_summary,
+                    "coaching_focus": coaching_focus,
                     "braking_style": braking_style,
                     "throttle_style": throttle_style,
                     "corner_profile": corner_profile,
                     "consistency_score": round(consistency, 1),
-                    "mistakes": mistakes,
+                    "mistakes": mistakes[:3],
                     "summary": (
-                        f"{item['label']} trends {braking_style.lower()} on brake release with "
-                        f"{throttle_style.lower()}, and looks strongest in {corner_profile.lower()} corners."
+                        f"{item['label']} is {benchmark_summary.lower()} "
+                        f"The coaching read is {coaching_focus.lower()}"
                     ),
                 }
             )
         return summaries
+
+    def _build_benchmark_rankings(self, series: list[dict], corner_breakdown: list[dict]) -> list[dict]:
+        if not series:
+            return []
+
+        lap_rank = self._rank_series(series, lambda item: item["metrics"].get("fastest_lap_seconds"), lower_is_better=True)
+        straight_rank = self._rank_series(series, lambda item: item["metrics"].get("top_speed"), lower_is_better=False)
+        consistency_rank = self._rank_series(series, lambda item: self._consistency_score(item.get("lap_samples", [])), lower_is_better=False)
+        phase_rankings = self._phase_rankings(series, corner_breakdown)
+        best_lap = min(
+            (item["metrics"].get("fastest_lap_seconds") for item in series if item["metrics"].get("fastest_lap_seconds") is not None),
+            default=None,
+        )
+        focus = self._corner_focus_by_label(corner_breakdown)
+        rankings: list[dict] = []
+        for item in series:
+            metric = item["metrics"]
+            lap_time = metric.get("fastest_lap_seconds")
+            delta = round(lap_time - best_lap, 3) if lap_time is not None and best_lap is not None else None
+            loss = focus.get(item["label"])
+            main_loss_corner = loss.get("corner_label") if loss and loss.get("total", 0) > 0.02 else None
+            main_loss_seconds = round(loss["total"], 4) if loss and loss.get("total", 0) > 0.02 else None
+            summary = (
+                f"{item['label']} ranks P{lap_rank.get(item['label'], '--')} on selected-lap pace"
+                + (f" and is {delta:+.3f}s from the selected benchmark." if delta is not None else ".")
+            )
+            if main_loss_corner:
+                summary += f" Main backend-identified loss is {main_loss_corner}."
+            rankings.append(
+                {
+                    "series_key": item["series_key"],
+                    "label": item["label"],
+                    "driver": item["driver"],
+                    "overall_rank": lap_rank.get(item["label"]),
+                    "lap_delta_to_best": delta,
+                    "braking_rank": phase_rankings["entry"].get(item["label"]),
+                    "apex_rank": phase_rankings["apex"].get(item["label"]),
+                    "exit_rank": phase_rankings["exit"].get(item["label"]),
+                    "straight_line_rank": straight_rank.get(item["label"]),
+                    "consistency_rank": consistency_rank.get(item["label"]),
+                    "main_loss_corner": main_loss_corner,
+                    "main_loss_seconds": main_loss_seconds,
+                    "summary": summary,
+                }
+            )
+        return sorted(rankings, key=lambda item: item.get("overall_rank") or 999)
+
+    @staticmethod
+    def _rank_series(series: list[dict], value_getter, lower_is_better: bool = True) -> dict[str, int]:
+        rows = []
+        for item in series:
+            value = value_getter(item)
+            if value is None:
+                continue
+            rows.append((item["label"], float(value)))
+        rows.sort(key=lambda row: row[1], reverse=not lower_is_better)
+        return {label: index + 1 for index, (label, _) in enumerate(rows)}
+
+    @staticmethod
+    def _phase_rankings(series: list[dict], corner_breakdown: list[dict]) -> dict[str, dict[str, int]]:
+        labels = [item["label"] for item in series]
+        phase_totals = {
+            "entry": {label: 0.0 for label in labels},
+            "apex": {label: 0.0 for label in labels},
+            "exit": {label: 0.0 for label in labels},
+        }
+        phase_keys = {"entry": "entry_delta", "apex": "apex_delta", "exit": "exit_delta"}
+        for corner in corner_breakdown:
+            for phase, key in phase_keys.items():
+                for label in labels:
+                    phase_totals[phase][label] += float(corner.get(key, {}).get(label, 0.0) or 0.0)
+        rankings: dict[str, dict[str, int]] = {}
+        for phase, totals in phase_totals.items():
+            sorted_rows = sorted(totals.items(), key=lambda row: row[1])
+            rankings[phase] = {label: index + 1 for index, (label, _) in enumerate(sorted_rows)}
+        return rankings
+
+    @staticmethod
+    def _build_pair_deltas(series: list[dict], corner_breakdown: list[dict]) -> list[dict]:
+        if len(series) < 2:
+            return []
+
+        output: list[dict] = []
+        for reference in series:
+            for comparison in series:
+                if reference["series_key"] == comparison["series_key"]:
+                    continue
+                reference_lap = reference["metrics"].get("fastest_lap_seconds")
+                comparison_lap = comparison["metrics"].get("fastest_lap_seconds")
+                corner_deltas: list[dict] = []
+                for corner in corner_breakdown:
+                    entry_delta = float(corner.get("entry_delta", {}).get(comparison["label"], 0.0) or 0.0) - float(corner.get("entry_delta", {}).get(reference["label"], 0.0) or 0.0)
+                    apex_delta = float(corner.get("apex_delta", {}).get(comparison["label"], 0.0) or 0.0) - float(corner.get("apex_delta", {}).get(reference["label"], 0.0) or 0.0)
+                    exit_delta = float(corner.get("exit_delta", {}).get(comparison["label"], 0.0) or 0.0) - float(corner.get("exit_delta", {}).get(reference["label"], 0.0) or 0.0)
+                    braking_reference = corner.get("braking_points", {}).get(reference["label"])
+                    braking_comparison = corner.get("braking_points", {}).get(comparison["label"])
+                    throttle_reference = corner.get("throttle_pickups", {}).get(reference["label"])
+                    throttle_comparison = corner.get("throttle_pickups", {}).get(comparison["label"])
+                    corner_deltas.append(
+                        {
+                            "corner": corner.get("corner", ""),
+                            "corner_label": corner.get("corner_label"),
+                            "corner_type": corner.get("corner_type", "Mixed"),
+                            "total_delta": round(entry_delta + apex_delta + exit_delta, 4),
+                            "entry_delta": round(entry_delta, 4),
+                            "apex_delta": round(apex_delta, 4),
+                            "exit_delta": round(exit_delta, 4),
+                            "braking_point_delta": round(float(braking_comparison) - float(braking_reference), 1)
+                            if braking_reference is not None and braking_comparison is not None
+                            else None,
+                            "throttle_pickup_delta": round(float(throttle_comparison) - float(throttle_reference), 1)
+                            if throttle_reference is not None and throttle_comparison is not None
+                            else None,
+                        }
+                    )
+                biggest_gain = min(corner_deltas, key=lambda item: item["total_delta"], default=None)
+                biggest_loss = max(corner_deltas, key=lambda item: item["total_delta"], default=None)
+                lap_delta = round(comparison_lap - reference_lap, 3) if reference_lap is not None and comparison_lap is not None else None
+                output.append(
+                    {
+                        "reference_series_key": reference["series_key"],
+                        "reference_label": reference["label"],
+                        "comparison_series_key": comparison["series_key"],
+                        "comparison_label": comparison["label"],
+                        "lap_delta": lap_delta,
+                        "corner_deltas": corner_deltas,
+                        "biggest_gain_corner": biggest_gain.get("corner_label") if biggest_gain else None,
+                        "biggest_loss_corner": biggest_loss.get("corner_label") if biggest_loss else None,
+                        "summary": (
+                            f"{comparison['label']} is {lap_delta:+.3f}s versus {reference['label']}."
+                            if lap_delta is not None
+                            else f"{comparison['label']} versus {reference['label']} has no complete lap-time delta."
+                        ),
+                    }
+                )
+        return output
+
+    @staticmethod
+    def _corner_shape(point: dict) -> str:
+        speed = float(point.get("speed") or 0.0)
+        steering = float(point.get("steering") or 0.0)
+        direction = "left" if steering < -3 else "right" if steering > 3 else "balanced"
+        if speed < 115:
+            shape = "stop"
+        elif speed < 180:
+            shape = "bend"
+        else:
+            shape = "sweep"
+        return f"{direction} {shape}" if direction != "balanced" else shape
+
+    def _corner_label(
+        self,
+        corner_index: int,
+        apex_point: dict,
+        start_distance: float,
+        end_distance: float,
+        official_name: str | None = None,
+    ) -> str:
+        corner_type = self._corner_type_from_speed(apex_point["speed"])
+        shape = self._corner_shape(apex_point).title()
+        length = max(0.0, end_distance - start_distance)
+        zone = "complex" if length > 260 else "corner"
+        base_label = f"T{corner_index} {corner_type} {shape} {zone}"
+        return f"{base_label} - {official_name}" if official_name else base_label
+
+    def _corner_hint(
+        self,
+        apex_point: dict,
+        start_distance: float,
+        end_distance: float,
+        official_name: str | None = None,
+    ) -> str:
+        apex_km = float(apex_point.get("distance") or 0.0) / 1000
+        length = max(0.0, end_distance - start_distance)
+        name_prefix = f"{official_name}: " if official_name else ""
+        return f"{name_prefix}{self._corner_shape(apex_point).title()} at {apex_km:.2f} km, {length:.0f} m analysis window"
+
+    @classmethod
+    def _official_corner_name(cls, grand_prix: str, corner_index: int) -> str | None:
+        normalized = grand_prix.strip().lower()
+        for key, corner_names in cls.official_corner_names.items():
+            if key in normalized:
+                return corner_names.get(corner_index)
+        return None
+
+    @staticmethod
+    def _corner_confidence(zone: list[dict], start_distance: float, apex_distance: float, end_distance: float) -> float:
+        if not zone:
+            return 0.0
+        speeds = [float(point.get("speed") or 0.0) for point in zone]
+        steering_samples = [abs(float(point.get("steering") or 0.0)) for point in zone]
+        brake_samples = [float(point.get("brake") or 0.0) for point in zone]
+        throttle_samples = [float(point.get("throttle") or 0.0) for point in zone]
+        speed_drop = max(speeds, default=0.0) - min(speeds, default=0.0)
+        window_length = max(1.0, end_distance - start_distance)
+        apex_balance = 1.0 - min(1.0, abs((apex_distance - start_distance) / window_length - 0.5) * 1.6)
+        activity_ratio = sum(
+            1
+            for brake, throttle, steering, speed in zip(brake_samples, throttle_samples, steering_samples, speeds)
+            if brake > 8 or steering > 16 or (throttle < 45 and speed < 215)
+        ) / max(len(zone), 1)
+        sample_score = min(1.0, len(zone) / 10)
+        speed_score = min(1.0, speed_drop / 80)
+        confidence = (sample_score * 0.25) + (speed_score * 0.25) + (activity_ratio * 0.3) + (apex_balance * 0.2)
+        return round(max(0.0, min(1.0, confidence)) * 100, 1)
+
+    @staticmethod
+    def _segmentation_quality(confidence: float) -> str:
+        if confidence >= 78:
+            return "high"
+        if confidence >= 55:
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _corner_focus_by_label(corner_breakdown: list[dict]) -> dict[str, dict]:
+        focus: dict[str, dict] = {}
+        for corner in corner_breakdown:
+            phase_maps = [corner.get("entry_delta", {}), corner.get("apex_delta", {}), corner.get("exit_delta", {})]
+            labels = set().union(*(phase_map.keys() for phase_map in phase_maps))
+            for label in labels:
+                total = sum(float(phase_map.get(label, 0.0) or 0.0) for phase_map in phase_maps)
+                current = focus.get(label)
+                if current is None or total > current["total"]:
+                    focus[label] = {
+                        "total": total,
+                        "corner": corner.get("corner", ""),
+                        "corner_label": corner.get("corner_label") or corner.get("corner", ""),
+                        "corner_type": corner.get("corner_type", "Mixed"),
+                    }
+        return focus
+
+    @staticmethod
+    def _coaching_focus(metric: dict, focus: dict | None, braking_style: str, throttle_style: str) -> str:
+        focus_text = (
+            f"prioritize {focus['corner_label']} where the trace gives away {focus['total']:.3f}s"
+            if focus and focus.get("total", 0) > 0.03
+            else "protect the current corner baseline because no single corner dominates the loss"
+        )
+        if braking_style == "Aggressive":
+            return f"{focus_text}; release brake pressure more progressively before the apex."
+        if throttle_style == "Late throttle":
+            return f"{focus_text}; bring throttle pickup earlier once steering starts unwinding."
+        if metric.get("gear_changes", 0) > 18:
+            return f"{focus_text}; simplify the gear sequence through the slowest phase."
+        return f"{focus_text}; keep the same entry shape and look for cleaner exit commitment."
 
     @staticmethod
     def _consistency_score(lap_samples: list[float]) -> float:
@@ -1182,7 +1559,11 @@ class FastF1Service:
         }
 
     @staticmethod
-    def _empty_telemetry_bundle() -> dict:
+    def _empty_telemetry_bundle(
+        unavailable_reason: str = "telemetry_unavailable",
+        diagnostics: list[str] | None = None,
+        cache_key: str | None = None,
+    ) -> dict:
         return {
             "series": [],
             "metrics": [],
@@ -1191,10 +1572,56 @@ class FastF1Service:
             "micro_sectors": [],
             "corner_breakdown": [],
             "performance": [],
+            "benchmark_rankings": [],
+            "pair_deltas": [],
+            "track_map": {"points": [], "corners": []},
+            "cache_metadata": {
+                "cache_hit": False,
+                "cache_key": cache_key,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "series_count": 0,
+                "unavailable_reason": unavailable_reason,
+                "diagnostics": diagnostics or [],
+            },
+            "unavailable_reason": unavailable_reason,
             "weather": None,
             "session_summary": None,
             "insights": [],
         }
+
+    @staticmethod
+    def _mark_telemetry_cache_hit(payload: dict) -> dict:
+        cached = {**payload}
+        metadata = {**cached.get("cache_metadata", {})}
+        metadata["cache_hit"] = True
+        cached["cache_metadata"] = metadata
+        return cached
+
+    @staticmethod
+    def _telemetry_cache_key(
+        year: int,
+        grand_prix: str,
+        session: str,
+        selected_driver_key: tuple[str, ...],
+        lap_selection_key: tuple[str, ...],
+    ) -> str:
+        drivers = ",".join(selected_driver_key) if selected_driver_key else "all"
+        laps = ",".join(lap_selection_key) if lap_selection_key else "fastest"
+        return f"{year}:{grand_prix.strip().lower()}:{session.strip().upper()}:drivers={drivers}:laps={laps}"
+
+    @staticmethod
+    def _telemetry_unavailable_reason(
+        telemetry: list[dict],
+        available_drivers: list[str],
+        selected_drivers: list[str] | None,
+    ) -> str | None:
+        if telemetry:
+            return None
+        if selected_drivers and not available_drivers:
+            return "selected_drivers_unavailable"
+        if available_drivers:
+            return "telemetry_stream_missing"
+        return "driver_roster_unavailable"
 
     @staticmethod
     def _downsample_telemetry_points(points: list[dict], limit: int = 240) -> list[dict]:
@@ -1288,6 +1715,11 @@ class FastF1Service:
             "micro_sectors": payload.get("micro_sectors", []),
             "corner_breakdown": payload.get("corner_breakdown", []),
             "performance": payload.get("performance", []),
+            "benchmark_rankings": payload.get("benchmark_rankings", []),
+            "pair_deltas": payload.get("pair_deltas", []),
+            "track_map": payload.get("track_map", {"points": [], "corners": []}),
+            "cache_metadata": payload.get("cache_metadata", {}),
+            "unavailable_reason": payload.get("unavailable_reason"),
             "weather": payload.get("weather"),
             "session_summary": payload.get("session_summary"),
             "insights": insights,

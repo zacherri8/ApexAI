@@ -1,6 +1,6 @@
 # ApexAI Master Record
 
-Last updated: 2026-05-19
+Last updated: 2026-05-26
 
 ## Purpose
 
@@ -9,7 +9,21 @@ This file is the canonical project record for ApexAI. It serves two jobs:
 1. It stores the running implementation history from the start of the project.
 2. It explains how the current system works across frontend, backend, APIs, data flow, and file structure.
 
-Whenever a new change is made, this file should be updated first and the DOCX export should be regenerated from it.
+Whenever a new change is made, this file must be updated in the same pass and the DOCX export should be regenerated from it.
+
+## Documentation Discipline
+
+Every implementation pass must leave a human-readable record behind. This is required for feature work, bug fixes, setup changes, styling changes, data-model changes, and operational fixes.
+
+Each change log entry should explain:
+
+- what changed in plain language
+- why the change was made
+- which parts of the system were touched
+- how the change was verified
+- any known caveats, follow-ups, or environment notes
+
+For normal code changes, update this Markdown file before considering the task complete. If the change affects the user-facing app, API contracts, setup flow, data model, or project behavior, also regenerate `docs/ApexAI_Project_Record.docx` from this source using `docs/generate_project_doc.py`.
 
 ## Project Summary
 
@@ -34,6 +48,99 @@ The product currently includes:
 - Activity history and saved outputs
 
 ## Chronological Update History
+
+### Phase 25: Telemetry Backend Completion Pass
+
+- Completed the backend-focused telemetry refinement pass so the feature can be treated as a stable analytics contract before moving attention to other product areas.
+- Added track-specific corner naming fallback support:
+  - known circuit maps can attach official names such as Silverstone `Abbey` to detected telemetry turns
+  - inferred labels remain available when a circuit is not in the backend map
+  - stable `T1`, `T2`, etc. identifiers are preserved for focus and navigation behavior
+- Improved corner segmentation metadata:
+  - each detected corner now carries a `confidence_score`
+  - each detected corner now carries a `segmentation_quality` value of `low`, `medium`, or `high`
+  - track-map corner markers inherit the same confidence and naming metadata
+- Added richer backend-owned lap benchmarking:
+  - `benchmark_rankings` ranks selected traces by overall lap time
+  - rankings include braking, apex, exit, straight-line, and consistency ranks
+  - rankings identify each trace's main backend-detected loss corner when one dominates
+- Added pair-ready backend delta contracts:
+  - `pair_deltas` now contains reference/comparison lap deltas for every selected trace pair
+  - each pair includes corner-level entry, apex, exit, braking-point, and throttle-pickup deltas
+  - this reduces how much comparison logic future frontend views need to reconstruct locally
+- Added explicit telemetry unavailable diagnostics:
+  - unavailable payloads now include `unavailable_reason`
+  - cache metadata includes diagnostics explaining missing FastF1, missing session, missing selected drivers, or missing telemetry streams
+- Added telemetry cache metadata:
+  - responses include cache key, generation timestamp, series count, cache hit state, diagnostics, and unavailable reason
+  - cached telemetry responses are marked as cache hits on subsequent backend reads
+- Added focused synthetic backend tests for telemetry analytics helper behavior without depending on live FastF1 availability.
+
+Technical files changed in this pass:
+
+- `backend/app/schemas/telemetry.py`
+- `backend/app/services/fastf1_service.py`
+- `backend/app/services/telemetry_service.py`
+- `backend/tests/test_telemetry_analytics.py`
+- `frontend/src/types/api.ts`
+- `docs/APEXAI_MASTER_RECORD.md`
+- `docs/ApexAI_Project_Record.docx`
+
+Verification for this pass:
+
+- backend syntax check: `python -m py_compile backend/app/schemas/telemetry.py backend/app/services/fastf1_service.py backend/app/services/telemetry_service.py backend/tests/test_telemetry_analytics.py`
+- synthetic telemetry analytics tests: `pytest backend/tests/test_telemetry_analytics.py`
+- telemetry API regression test: `pytest backend/tests/test_api.py -k telemetry`
+- full backend regression suite: `pytest backend/tests` with `24 passed`
+- frontend production build: `npm run build`
+
+Known notes:
+
+- These changes are additive. Existing telemetry fields remain in place for current frontend behavior.
+- Official corner naming is intentionally a backend fallback map, not a full FIA circuit database. Unsupported circuits still receive inferred telemetry labels.
+
+### Phase 24: Telemetry Coaching And Benchmark Readability Pass
+
+- Strengthened the telemetry coaching layer so the side panel now explains selected trace pace in a more actionable race-engineering format instead of only showing raw summary heuristics.
+- Added richer selected-trace benchmark ranking:
+  - each selected trace is ranked against the selected lap set
+  - each trace shows delta to the best selected benchmark lap
+  - each trace highlights its main corner deficit or best-matched corner
+  - coaching cues point the user toward the highest-value driving correction
+- Improved corner naming and labeling across the telemetry feature:
+  - backend corner payloads now include `corner_label` and `corner_hint`
+  - labels include corner number, speed class, approximate shape, and whether the window behaves like a corner or complex
+  - track-map markers and dashboard corner controls now surface the richer labels and hints
+- Extended telemetry performance summaries with:
+  - `lap_rank`
+  - `delta_to_best_seconds`
+  - `benchmark_summary`
+  - `coaching_focus`
+- Preserved the existing `T1`, `T2`, etc. identifiers for stable focus behavior while adding descriptive labels for humans.
+- Fixed a track-map payload omission so selected lap payloads carry `track_map_points` through to the composed telemetry response.
+- Added this documentation discipline section so future implementation passes must be logged in the project record.
+
+Technical files changed in this pass:
+
+- `backend/app/schemas/telemetry.py`
+- `backend/app/services/fastf1_service.py`
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+- `frontend/src/components/telemetry-track-map.tsx`
+- `frontend/src/types/api.ts`
+- `docs/APEXAI_MASTER_RECORD.md`
+- `docs/ApexAI_Project_Record.docx`
+
+Verification for this pass:
+
+- backend syntax check: `python -m py_compile backend/app/schemas/telemetry.py backend/app/services/fastf1_service.py`
+- frontend production build: `npm run build`
+- telemetry API regression test: `pytest backend/tests/test_api.py -k telemetry`
+- manual local run confirmed backend/frontend login and telemetry workspace behavior
+
+Known notes:
+
+- A full backend test run exposed an existing unrelated FastF1 weekend-context assertion where the endpoint reported `source=fastf1` with zero drivers. The telemetry-specific test passed.
 
 ### Phase 15: Telemetry Overlay And Stability Pass
 

@@ -14,7 +14,13 @@ import { TelemetryHud } from "@/components/telemetry-hud";
 import { TelemetrySidePanel } from "@/components/telemetry-side-panel";
 import { TelemetryTrackMapPanel } from "@/components/telemetry-track-map";
 import { getSeasonCalendar, getTelemetry, getWeekendContext } from "@/services/api";
-import { SeasonCalendarResponse, TelemetryLapOption, TelemetryResponse, WeekendContextResponse } from "@/types/api";
+import {
+  SeasonCalendarResponse,
+  TelemetryCornerBreakdown,
+  TelemetryLapOption,
+  TelemetryResponse,
+  WeekendContextResponse,
+} from "@/types/api";
 
 const defaultSession = {
   year: new Date().getFullYear(),
@@ -31,6 +37,10 @@ const defaultSignals = {
   rpm: true,
   delta: true,
 };
+
+function cornerDisplayName(corner?: Pick<TelemetryCornerBreakdown, "corner" | "corner_label"> | null) {
+  return corner?.corner_label || corner?.corner || "";
+}
 
 function normalizeLapSelections(
   current: Record<string, number[]>,
@@ -123,6 +133,7 @@ export default function DashboardPage() {
   );
   const telemetrySeries = telemetry?.series ?? [];
   const telemetryCorners = telemetry?.corner_breakdown ?? [];
+  const focusedCornerLabel = cornerDisplayName(telemetryCorners.find((item) => item.corner === focusedCorner));
   const maxDistance = telemetrySeries[0]?.points.at(-1)?.distance ?? 0;
 
   useEffect(() => {
@@ -760,7 +771,7 @@ export default function DashboardPage() {
                       </div>
                       <div className="mt-3 text-xs text-zinc-400">
                         {distanceWindow
-                          ? `Focused slice: ${Math.round(distanceWindow.start)}m to ${Math.round(distanceWindow.end)}m${focusedCorner ? ` around ${focusedCorner}` : ""}.`
+                          ? `Focused slice: ${Math.round(distanceWindow.start)}m to ${Math.round(distanceWindow.end)}m${focusedCornerLabel ? ` around ${focusedCornerLabel}` : ""}.`
                           : `Full-lap view across ${Math.round(maxDistance)}m of sampled distance.`}
                       </div>
                       <div className="mt-2 text-xs text-zinc-400">
@@ -780,8 +791,9 @@ export default function DashboardPage() {
                             }`}
                             onClick={() => focusCorner(corner.corner)}
                             type="button"
+                            title={corner.corner_hint || corner.corner_label || corner.corner}
                           >
-                            {corner.corner} • {corner.corner_type}
+                            {cornerDisplayName(corner)} / {corner.corner_type}
                           </button>
                         ))}
                       </div>
