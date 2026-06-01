@@ -1,6 +1,6 @@
 # ApexAI Master Record
 
-Last updated: 2026-05-26
+Last updated: 2026-06-01
 
 ## Purpose
 
@@ -48,6 +48,94 @@ The product currently includes:
 - Activity history and saved outputs
 
 ## Chronological Update History
+
+### Phase 27: Driver Compare Completion Pass
+
+- Reworked Driver Compare from a shallow metric duel into a data-rich FastF1 telemetry comparison workspace.
+- Preserved the existing FastF1 data source path by continuing to use the telemetry API rather than hardcoded comparison data.
+- Added exact lap selection for each compared driver:
+  - lap choices come from FastF1-backed `lap_options`
+  - each side compares one selected lap so the result is a clean driver-versus-driver benchmark
+  - default lap selection normalizes to the best available lap returned by the telemetry response
+- Added a clear comparison verdict:
+  - explains which selected lap is faster
+  - uses backend `pair_deltas` when available
+  - falls back safely when complete lap timing is not available
+- Added richer driver cards with lap time, compound, throttle, brake time, and top-speed context.
+- Added sector delta analysis for S1, S2, and S3 so the user can see broad lap-shape differences before reading corner-level detail.
+- Added backend rank display using telemetry `benchmark_rankings`:
+  - overall rank
+  - braking rank
+  - apex rank
+  - exit rank
+  - straight-line rank
+  - consistency rank
+- Added corner gain/loss analysis from backend `pair_deltas`:
+  - strongest relative gain for the comparison trace
+  - largest relative loss for the comparison trace
+  - top corner rows with total, entry, apex, and exit deltas
+  - braking-point and throttle-pickup distance shifts
+- Added data-quality reporting for compare:
+  - cache hit state
+  - number of loaded telemetry traces
+  - unavailable reason
+  - FastF1 diagnostics when present
+- Added a copyable comparison debrief for users who want to move the analysis into a report or notes.
+- Removed hardcoded default driver assumptions from the compare workflow; selected drivers now come from the loaded FastF1 weekend context.
+
+Technical files changed in this pass:
+
+- `frontend/src/app/compare/page.tsx`
+- `docs/APEXAI_MASTER_RECORD.md`
+- `docs/ApexAI_Project_Record.docx`
+
+Verification for this pass:
+
+- frontend production build: `npm run build`
+
+Known notes:
+
+- This pass focuses on feature completeness and readable data presentation. A broader visual decluttering pass is intentionally deferred until after the remaining product features are functionally complete.
+
+### Phase 26: Telemetry Finalization And Handoff Pass
+
+- Closed the remaining telemetry feature gaps so the project can move on to other website features without leaving backend telemetry metadata unused.
+- Surfaced backend-owned telemetry analytics in the dashboard:
+  - side-panel benchmark ranking now prefers the backend `benchmark_rankings` contract
+  - selected pair review now prefers the backend `pair_deltas` contract
+  - fallback frontend calculations remain available if older payloads do not include the new fields
+- Added visible telemetry data-quality reporting:
+  - corner cards now show confidence percentage and segmentation quality
+  - low-confidence corners are summarized in the side panel
+  - cache hit state, cache key, generated timestamp, series count, unavailable reason, and diagnostics are shown in an operator-oriented data-quality panel
+- Improved track-map confidence readability:
+  - marker colors now reflect high, medium, and low backend corner confidence
+  - corner shortcut chips include confidence percentage when available
+- Added a telemetry debrief handoff block:
+  - dashboard generates a concise text debrief from selected traces, benchmark ranking, pair delta, priority corner, cache state, and data quality
+  - debrief can be copied for use in the report workflow or external notes
+- Expanded backend official-corner fallback coverage for common F1 venues beyond the initial small map.
+- Preserved all existing telemetry behavior, including selected lap overlays, chart toggles, corner focus, drag-to-zoom, live cursor, delta chart, track map, and coaching side panel.
+
+Technical files changed in this pass:
+
+- `backend/app/services/fastf1_service.py`
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/components/telemetry-side-panel.tsx`
+- `frontend/src/components/telemetry-track-map.tsx`
+- `docs/APEXAI_MASTER_RECORD.md`
+- `docs/ApexAI_Project_Record.docx`
+
+Verification for this pass:
+
+- backend syntax check: `python -m py_compile backend/app/services/fastf1_service.py`
+- synthetic telemetry analytics tests: `pytest backend/tests/test_telemetry_analytics.py`
+- full backend regression suite: `pytest backend/tests` with `24 passed`
+- frontend production build: `npm run build`
+
+Known notes:
+
+- Telemetry is now considered complete enough to move on. Remaining future work would be deeper product integration, not missing core telemetry capability.
 
 ### Phase 25: Telemetry Backend Completion Pass
 

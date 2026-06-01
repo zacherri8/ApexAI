@@ -1,10 +1,13 @@
 "use client";
 
 import {
+  TelemetryBenchmarkRanking,
+  TelemetryCacheMetadata,
   TelemetryCornerBreakdown,
   TelemetryDriverMetrics,
   TelemetryLapOption,
   TelemetryMicroSector,
+  TelemetryPairDelta,
   TelemetryPerformanceSummary,
   TelemetrySeries,
 } from "@/types/api";
@@ -22,6 +25,10 @@ function formatSignedSeconds(value?: number | null) {
 
 function formatMeters(value?: number | null) {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)}m` : "--";
+}
+
+function formatRank(value?: number | null) {
+  return typeof value === "number" ? `P${value}` : "--";
 }
 
 function idealLap(metrics: TelemetryDriverMetrics[]) {
@@ -117,7 +124,35 @@ function buildLapBenchmarkRanking(
   metrics: TelemetryDriverMetrics[],
   performance: TelemetryPerformanceSummary[],
   cornerBreakdown: TelemetryCornerBreakdown[],
+  benchmarkRankings: TelemetryBenchmarkRanking[],
 ) {
+  const metricsByKey = new Map(metrics.map((metric) => [metric.series_key, metric]));
+  if (benchmarkRankings.length) {
+    return benchmarkRankings
+      .map((ranking) => {
+        const metric = metricsByKey.get(ranking.series_key);
+        if (!metric) {
+          return null;
+        }
+        return {
+          metric,
+          rank: ranking.overall_rank,
+          deltaToBest: ranking.lap_delta_to_best,
+          mainLossCorner: ranking.main_loss_corner,
+          mainLossSeconds: ranking.main_loss_seconds,
+          coachingFocus: performance.find((item) => item.series_key === ranking.series_key)?.coaching_focus,
+          benchmarkSummary: ranking.summary,
+          brakingRank: ranking.braking_rank,
+          apexRank: ranking.apex_rank,
+          exitRank: ranking.exit_rank,
+          straightLineRank: ranking.straight_line_rank,
+          consistencyRank: ranking.consistency_rank,
+          backendOwned: true,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  }
+
   const performanceByKey = new Map(performance.map((item) => [item.series_key, item]));
   const timedMetrics = metrics
     .filter((metric) => typeof metric.fastest_lap_seconds === "number")
@@ -146,6 +181,7 @@ function buildLapBenchmarkRanking(
       bestCorner: bestCorner && bestCorner.total <= 0.01 ? bestCorner : null,
       coachingFocus: performanceItem?.coaching_focus,
       benchmarkSummary: performanceItem?.benchmark_summary,
+      backendOwned: false,
     };
   });
 }
@@ -156,11 +192,49 @@ function buildDeltaPairReview(
   referenceKey?: string | null,
   comparisonKey?: string | null,
   focusedCorner?: string | null,
+  pairDeltas: TelemetryPairDelta[] = [],
 ) {
   const reference = metrics.find((metric) => metric.series_key === referenceKey);
   const comparison = metrics.find((metric) => metric.series_key === comparisonKey);
   if (!reference || !comparison) {
     return null;
+  }
+  const backendPair = pairDeltas.find(
+    (pair) =>
+      pair.reference_series_key === reference.series_key &&
+      pair.comparison_series_key === comparison.series_key,
+  );
+
+  if (backendPair) {
+    const pairCornerRows = backendPair.corner_deltas
+      .map((corner) => ({
+        corner: corner.corner,
+        cornerType: corner.corner_type,
+        total: corner.total_delta,
+        entry: corner.entry_delta,
+        apex: corner.apex_delta,
+        exit: corner.exit_delta,
+        label: corner.corner_label || corner.corner,
+        hint: null,
+        brakingDelta: corner.braking_point_delta ?? 0,
+        throttleDelta: corner.throttle_pickup_delta ?? 0,
+      }))
+      .filter((corner) => Number.isFinite(corner.total));
+    const strongestGain = [...pairCornerRows].sort((left, right) => left.total - right.total)[0] ?? null;
+    const largestLoss = [...pairCornerRows].sort((left, right) => right.total - left.total)[0] ?? null;
+    const focusCornerRow =
+      pairCornerRows.find((corner) => corner.corner === focusedCorner) ?? strongestGain ?? largestLoss ?? null;
+
+    return {
+      reference,
+      comparison,
+      lapGap: backendPair.lap_delta ?? null,
+      strongestGain,
+      largestLoss,
+      focusCornerRow,
+      summary: backendPair.summary,
+      backendOwned: true,
+    };
   }
 
   const lapGap =
@@ -209,6 +283,8 @@ function buildDeltaPairReview(
     strongestGain,
     largestLoss,
     focusCornerRow,
+    summary: null,
+    backendOwned: false,
   };
 }
 
@@ -261,6 +337,10 @@ export function TelemetrySidePanel({
   microSectors = [],
   cornerBreakdown = [],
   performance = [],
+  benchmarkRankings = [],
+  pairDeltas = [],
+  cacheMetadata,
+  unavailableReason,
   referenceKey,
   comparisonKey,
   focusedCorner,
@@ -273,6 +353,10 @@ export function TelemetrySidePanel({
   microSectors?: TelemetryMicroSector[];
   cornerBreakdown?: TelemetryCornerBreakdown[];
   performance?: TelemetryPerformanceSummary[];
+  benchmarkRankings?: TelemetryBenchmarkRanking[];
+  pairDeltas?: TelemetryPairDelta[];
+  cacheMetadata?: TelemetryCacheMetadata | null;
+  unavailableReason?: string | null;
   referenceKey?: string | null;
   comparisonKey?: string | null;
   focusedCorner?: string | null;
@@ -288,7 +372,14 @@ export function TelemetrySidePanel({
   const lapGroups = summarizeLapOptions(lapOptions);
   const bestMicroSectors = topMicroSectors(microSectors);
   const driverLapSets = sameDriverLapSets(metrics);
-  const deltaPairReview = buildDeltaPairReview(metrics, cornerBreakdown, referenceKey, comparisonKey, focusedCorner);
+  const deltaPairReview = buildDeltaPairReview(
+    metrics,
+    cornerBreakdown,
+    referenceKey,
+    comparisonKey,
+    focusedCorner,
+    pairDeltas,
+  );
   const liveReadout =
     hoveredDistance != null
       ? series
@@ -304,7 +395,10 @@ export function TelemetrySidePanel({
     hoveredDistance,
     Boolean(deltaPairReview),
   );
-  const lapBenchmarkRanking = buildLapBenchmarkRanking(metrics, performance, cornerBreakdown);
+  const lapBenchmarkRanking = buildLapBenchmarkRanking(metrics, performance, cornerBreakdown, benchmarkRankings);
+  const lowConfidenceCorners = cornerBreakdown.filter(
+    (corner) => corner.segmentation_quality === "low" || (corner.confidence_score ?? 100) < 55,
+  );
 
   return (
     <aside className="space-y-4">
@@ -397,14 +491,25 @@ export function TelemetrySidePanel({
                 <div className="mt-3 grid gap-2 text-xs leading-5 text-zinc-400">
                   <div>{row.benchmarkSummary ?? "Benchmark summary unavailable for this trace."}</div>
                   <div>
-                    {row.biggestDeficit
-                      ? `Main loss: ${cornerDisplayName(row.biggestDeficit.corner)} (${formatSignedSeconds(
-                          row.biggestDeficit.total,
-                        )}).`
-                      : row.bestCorner
-                        ? `Best matched corner: ${cornerDisplayName(row.bestCorner.corner)}.`
-                        : "Corner losses are evenly spread across the selected trace."}
+                    {"mainLossCorner" in row && row.mainLossCorner
+                      ? `Main loss: ${row.mainLossCorner} (${formatSignedSeconds(row.mainLossSeconds)}).`
+                      : "biggestDeficit" in row && row.biggestDeficit
+                        ? `Main loss: ${cornerDisplayName(row.biggestDeficit.corner)} (${formatSignedSeconds(
+                            row.biggestDeficit.total,
+                          )}).`
+                        : "bestCorner" in row && row.bestCorner
+                          ? `Best matched corner: ${cornerDisplayName(row.bestCorner.corner)}.`
+                          : "Corner losses are evenly spread across the selected trace."}
                   </div>
+                  {"brakingRank" in row ? (
+                    <div className="grid gap-1 text-[0.68rem] uppercase tracking-[0.14em] text-zinc-500 sm:grid-cols-2">
+                      <span>Brake {formatRank(row.brakingRank)}</span>
+                      <span>Apex {formatRank(row.apexRank)}</span>
+                      <span>Exit {formatRank(row.exitRank)}</span>
+                      <span>Straight {formatRank(row.straightLineRank)}</span>
+                      <span className="sm:col-span-2">Consistency {formatRank(row.consistencyRank)}</span>
+                    </div>
+                  ) : null}
                   {row.coachingFocus ? <div>Coaching cue: {row.coachingFocus}</div> : null}
                 </div>
               </div>
@@ -548,7 +653,13 @@ export function TelemetrySidePanel({
                 {deltaPairReview.lapGap != null
                   ? `Selected lap gap: ${deltaPairReview.lapGap > 0 ? "+" : ""}${deltaPairReview.lapGap.toFixed(3)}s against the reference trace. Negative gap means the comparison trace is faster overall.`
                   : "Lap gap unavailable for the selected traces."}
+                {deltaPairReview.summary ? ` ${deltaPairReview.summary}` : ""}
               </div>
+              {deltaPairReview.backendOwned ? (
+                <div className="mt-2 text-[0.62rem] uppercase tracking-[0.18em] text-zinc-500">
+                  Backend pair-delta contract
+                </div>
+              ) : null}
             </div>
             {deltaPairReview.strongestGain ? (
               <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-xs leading-5 text-emerald-100">
@@ -648,11 +759,17 @@ export function TelemetrySidePanel({
             <div key={corner.corner} className="rounded-2xl border border-white/10 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm font-medium text-white">{cornerDisplayName(corner)}</span>
-                <span className="text-xs uppercase tracking-[0.22em] text-zinc-500">{corner.corner_type}</span>
+                <span className="text-xs uppercase tracking-[0.22em] text-zinc-500">
+                  {corner.corner_type} / {corner.segmentation_quality ?? "unchecked"}
+                </span>
               </div>
               {corner.corner_hint ? (
                 <div className="mt-2 text-xs leading-5 text-zinc-500">{corner.corner_hint}</div>
               ) : null}
+              <div className="mt-2 flex flex-wrap gap-2 text-[0.62rem] uppercase tracking-[0.16em] text-zinc-500">
+                <span>Confidence {corner.confidence_score != null ? `${corner.confidence_score.toFixed(1)}%` : "--"}</span>
+                {corner.official_corner_name ? <span>Official: {corner.official_corner_name}</span> : null}
+              </div>
               <div className="mt-3 grid gap-3">
                 <div>
                   <div className="text-[0.62rem] uppercase tracking-[0.22em] text-zinc-500">Entry</div>
@@ -669,6 +786,37 @@ export function TelemetrySidePanel({
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="f1-panel rounded-[28px] p-4 sm:p-5">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.3em] text-zinc-500">
+          Telemetry Data Quality
+        </p>
+        <p className="mt-2 text-sm leading-6 text-zinc-400">
+          Backend diagnostics explain how much trust to place in the computed corner model and whether the
+          response came from a cached FastF1 telemetry bundle.
+        </p>
+        <div className="mt-4 grid gap-3 text-xs text-zinc-300">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+            <div>Cache: {cacheMetadata?.cache_hit ? "hit" : "fresh or unavailable"}</div>
+            <div className="mt-1 text-zinc-500">Series: {cacheMetadata?.series_count ?? metrics.length}</div>
+            {cacheMetadata?.generated_at ? (
+              <div className="mt-1 text-zinc-500">Generated: {new Date(cacheMetadata.generated_at).toLocaleString()}</div>
+            ) : null}
+            {cacheMetadata?.cache_key ? <div className="mt-1 break-all text-zinc-500">Key: {cacheMetadata.cache_key}</div> : null}
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+            <div>Unavailable reason: {unavailableReason ?? cacheMetadata?.unavailable_reason ?? "none"}</div>
+            <div className="mt-1 text-zinc-500">
+              Low-confidence corners: {lowConfidenceCorners.length ? lowConfidenceCorners.map(cornerDisplayName).join(", ") : "none"}
+            </div>
+          </div>
+          {cacheMetadata?.diagnostics?.length ? (
+            <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-yellow-100">
+              {cacheMetadata.diagnostics.slice(0, 3).join(" / ")}
+            </div>
+          ) : null}
         </div>
       </div>
 

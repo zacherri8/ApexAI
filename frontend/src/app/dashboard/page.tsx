@@ -98,6 +98,33 @@ function roundInspectionDistance(value: number) {
   return Math.round(value / 5) * 5;
 }
 
+function buildTelemetryDebrief(telemetry: TelemetryResponse | null, grandPrix: string, year: number, session: string) {
+  if (!telemetry?.series?.length) {
+    return "";
+  }
+  const fastest = [...telemetry.metrics]
+    .filter((metric) => typeof metric.fastest_lap_seconds === "number")
+    .sort((left, right) => (left.fastest_lap_seconds ?? Infinity) - (right.fastest_lap_seconds ?? Infinity))[0];
+  const topRanking = telemetry.benchmark_rankings?.[0];
+  const priorityCorner = topRanking?.main_loss_corner ?? telemetry.corner_breakdown?.[0]?.corner_label;
+  const quality = telemetry.corner_breakdown?.length
+    ? `${telemetry.corner_breakdown.filter((corner) => corner.segmentation_quality === "high").length}/${telemetry.corner_breakdown.length} high-confidence corners`
+    : "corner confidence unavailable";
+  const pairSummary = telemetry.pair_deltas?.[0]?.summary;
+  return [
+    `${grandPrix} ${year} ${session} telemetry debrief`,
+    `Selected traces: ${telemetry.series.map((trace) => trace.label).join(" vs ")}`,
+    fastest ? `Benchmark lap: ${fastest.label} at ${fastest.fastest_lap_seconds?.toFixed(3)}s` : null,
+    topRanking ? `Backend ranking: ${topRanking.summary}` : null,
+    priorityCorner ? `Priority corner: ${priorityCorner}` : null,
+    pairSummary ? `Pair delta: ${pairSummary}` : null,
+    `Data quality: ${quality}; cache ${telemetry.cache_metadata?.cache_hit ? "hit" : "fresh"}`,
+    telemetry.unavailable_reason ? `Unavailable reason: ${telemetry.unavailable_reason}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export default function DashboardPage() {
   const { token } = useAuth();
   const [calendar, setCalendar] = useState<SeasonCalendarResponse | null>(null);
@@ -135,6 +162,10 @@ export default function DashboardPage() {
   const telemetryCorners = telemetry?.corner_breakdown ?? [];
   const focusedCornerLabel = cornerDisplayName(telemetryCorners.find((item) => item.corner === focusedCorner));
   const maxDistance = telemetrySeries[0]?.points.at(-1)?.distance ?? 0;
+  const telemetryDebrief = useMemo(
+    () => buildTelemetryDebrief(telemetry, session.grandPrix, session.year, session.session),
+    [session.grandPrix, session.session, session.year, telemetry],
+  );
 
   useEffect(() => {
     if (!token) {
@@ -458,6 +489,13 @@ export default function DashboardPage() {
     setDistanceWindow(clampWindowRange(distanceWindow.start + shift, distanceWindow.end + shift, maxDistance));
   }
 
+  async function copyTelemetryDebrief() {
+    if (!telemetryDebrief) {
+      return;
+    }
+    await navigator.clipboard?.writeText(telemetryDebrief);
+  }
+
   return (
     <Shell>
       <section className="page-frame aurora-frame reveal-up rounded-[32px] px-6 py-8 sm:px-8 sm:py-10">
@@ -696,6 +734,25 @@ export default function DashboardPage() {
               {weekendContext?.notice ? <StatusPanel message={weekendContext.notice} title="Notice" tone="warning" /> : null}
               {telemetry?.notice ? <StatusPanel message={telemetry.notice} title="Telemetry" tone="warning" /> : null}
               {error ? <StatusPanel message={error} title="Error" tone="error" /> : null}
+              {telemetryDebrief ? (
+                <div className="rounded-[24px] border border-white/10 bg-white/[0.03] p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.28em] text-zinc-500">
+                      Telemetry Debrief Handoff
+                    </p>
+                    <button
+                      className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-zinc-300 transition hover:border-white/20"
+                      onClick={copyTelemetryDebrief}
+                      type="button"
+                    >
+                      Copy Debrief
+                    </button>
+                  </div>
+                  <pre className="mt-3 whitespace-pre-wrap rounded-2xl border border-white/10 bg-black/20 p-3 text-xs leading-5 text-zinc-400">
+                    {telemetryDebrief}
+                  </pre>
+                </div>
+              ) : null}
 
               {telemetrySeries.length ? (
                 <div className="rounded-[24px] border border-white/10 bg-white/[0.03] p-4">
@@ -943,6 +1000,10 @@ export default function DashboardPage() {
               microSectors={telemetry?.micro_sectors ?? []}
               cornerBreakdown={telemetry?.corner_breakdown ?? []}
               performance={telemetry?.performance ?? []}
+              benchmarkRankings={telemetry?.benchmark_rankings ?? []}
+              pairDeltas={telemetry?.pair_deltas ?? []}
+              cacheMetadata={telemetry?.cache_metadata ?? null}
+              unavailableReason={telemetry?.unavailable_reason ?? null}
               referenceKey={deltaPair.referenceKey}
               comparisonKey={deltaPair.comparisonKey}
               focusedCorner={focusedCorner}

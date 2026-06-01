@@ -23,6 +23,19 @@ function buildTrackPath(trackMap: TelemetryTrackMap) {
     .join(" ");
 }
 
+function confidenceFill(confidence?: number | null) {
+  if (confidence == null) {
+    return "#f5f5f5";
+  }
+  if (confidence >= 78) {
+    return "#22c55e";
+  }
+  if (confidence >= 55) {
+    return "#facc15";
+  }
+  return "#f97316";
+}
+
 export function TelemetryTrackMapPanel({
   trackMap,
   focusedCorner,
@@ -76,7 +89,7 @@ export function TelemetryTrackMapPanel({
                   cx={corner.x}
                   cy={corner.y}
                   r={focusedCorner === corner.corner ? 3.6 : 2.6}
-                  fill={focusedCorner === corner.corner ? "#e10600" : "#f5f5f5"}
+                  fill={focusedCorner === corner.corner ? "#e10600" : confidenceFill(corner.confidence_score)}
                 />
                 <text
                   x={corner.x + 2.4}
@@ -102,6 +115,13 @@ export function TelemetryTrackMapPanel({
           </div>
         )}
       </div>
+      {trackMap.corners.length ? (
+        <div className="mt-3 grid gap-2 text-[0.65rem] uppercase tracking-[0.14em] text-zinc-500 sm:grid-cols-3">
+          <span>Green high confidence</span>
+          <span>Yellow medium</span>
+          <span>Orange low</span>
+        </div>
+      ) : null}
       <div className="mt-3 flex flex-wrap gap-2">
         {trackMap.corners.slice(0, 10).map((corner) => (
           <button
@@ -115,7 +135,7 @@ export function TelemetryTrackMapPanel({
             type="button"
             title={corner.corner_hint || corner.corner_label || corner.corner}
           >
-            {`${corner.corner_label || corner.corner} / ${corner.corner_type}`}
+            {`${corner.corner_label || corner.corner} / ${corner.confidence_score != null ? `${corner.confidence_score.toFixed(0)}%` : corner.corner_type}`}
           </button>
         ))}
       </div>
