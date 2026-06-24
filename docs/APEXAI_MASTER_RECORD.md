@@ -1,6 +1,6 @@
 # ApexAI Master Record
 
-Last updated: 2026-06-01
+Last updated: 2026-06-11
 
 ## Purpose
 
@@ -48,6 +48,97 @@ The product currently includes:
 - Activity history and saved outputs
 
 ## Chronological Update History
+
+### Phase 29: One-Command Local Startup Pass
+
+- Added a root-level one-command development launcher so the project can be started from a single terminal instead of opening separate backend and frontend shells every time.
+- Added a root `package.json` with:
+  - `npm run dev` for the default local startup flow
+  - `npm run dev:ports` as a documented port-override entry point
+  - `npm run stop` to shut both launcher-owned processes down cleanly
+- Added a Windows-friendly PowerShell runner at `scripts/run-dev.ps1`:
+  - checks that backend and frontend directories exist
+  - checks that the backend virtualenv Python exists
+  - locates `npm.cmd`
+  - validates that the requested ports are free before startup
+  - starts FastAPI and Next.js from one root command in the active Windows environment
+  - waits for backend health and frontend HTTP readiness
+  - writes runtime state so the services can be stopped later through one matching command
+- Added `scripts/stop-dev.ps1` so the root launcher has a clear teardown path instead of leaving orphaned development processes behind.
+- Added Git hygiene for local runner artifacts:
+  - `.codex/` is now ignored so local Codex-generated logs and helper runtime files do not pollute Git status before a GitHub push
+  - temporary launcher runtime folders remain ignored as local-only state
+- Updated the top-level `README.md` so the default local run flow is now documented as a single command from the repo root.
+- Preserved the original separate backend/frontend startup commands for debugging and direct service work. This pass adds orchestration convenience without removing the old paths.
+
+Technical files changed in this pass:
+
+- `package.json`
+- `scripts/run-dev.ps1`
+- `README.md`
+- `docs/APEXAI_MASTER_RECORD.md`
+- `docs/ApexAI_Project_Record.docx`
+
+Verification for this pass:
+
+- one-command launcher smoke test on alternate ports
+- doc regeneration: `python docs/generate_project_doc.py`
+
+Known notes:
+
+- The new root launcher is designed around the current Windows development environment because that is the active project setup.
+
+### Phase 28: Driver Compare Analytics Deepening Pass
+
+- Extended the Driver Compare feature without changing its existing FastF1-backed request flow, lap selection model, or prior comparison blocks.
+- Added a richer session-analysis layer at the top of compare:
+  - session summary now appears directly inside the compare verdict area
+  - weather and backend insight lines are surfaced so users can read the lap comparison in weekend context instead of as isolated numbers
+- Added compare-specific coaching summaries using backend `performance` data:
+  - benchmark summary
+  - coaching focus
+  - braking style
+  - throttle style
+  - corner profile
+  - consistency score
+  - mistake flags when the backend detects an execution signature
+- Added a micro-sector swing section using backend `micro_sectors`:
+  - counts how many micro-sectors each selected lap leads
+  - highlights the biggest gain and biggest loss zone
+  - lists segment distance ranges and corner-type tags so users can localize the pace difference more precisely
+- Added a full trace-analysis layer to Driver Compare using the existing telemetry components:
+  - synced speed, throttle, brake, steering, gear, RPM, and delta traces can now be shown directly inside compare
+  - compare now includes a shared inspection window with zoom, pan, range sliders, drag-to-zoom, and a live cursor
+  - compare now includes the backend track map and corner focus controls so the charts can be read in circuit context
+  - all of this remains tied to the same selected FastF1 laps rather than any hardcoded compare dataset
+- Expanded compare ranking readability:
+  - benchmark rank cards now include lap delta to best
+  - backend ranking summary text is shown directly in compare
+  - backend main-loss corner context is surfaced when available
+- Improved corner interpretation and naming on the compare page:
+  - compare rows now prefer backend human-readable corner labels
+  - official corner names are carried through when available
+  - confidence percentage and segmentation quality are visible in the compare corner review
+  - corner hints are surfaced so the analysis reads more like engineering notes and less like a raw table
+- Added a compare-specific corner trust layer:
+  - users can see which backend corner detections are low confidence
+  - the page now explains how to treat those corners as directional rather than final truth
+- Removed a stale unused reverse-pair variable from the compare page while keeping all existing compare behavior intact.
+
+Technical files changed in this pass:
+
+- `frontend/src/app/compare/page.tsx`
+- `docs/APEXAI_MASTER_RECORD.md`
+- `docs/ApexAI_Project_Record.docx`
+
+Verification for this pass:
+
+- frontend production build: `npm run build`
+- doc regeneration: `python docs/generate_project_doc.py`
+
+Known notes:
+
+- This pass intentionally improves analytical depth and readability without attempting the larger compare-page visual decluttering pass that is still planned for later frontend work.
 
 ### Phase 27: Driver Compare Completion Pass
 

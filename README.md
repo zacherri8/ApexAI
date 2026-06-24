@@ -16,6 +16,33 @@ Full-stack F1 analytics platform with telemetry visualization, strategy guidance
 
 ## Quick Start
 
+### One Command Startup
+
+From the project root:
+
+```bash
+npm run dev
+```
+
+This starts both services from one root command:
+
+- backend: `http://127.0.0.1:8000`
+- frontend: `http://127.0.0.1:3000`
+
+On Windows, this root command launches the backend and frontend as child PowerShell processes and waits for them to come up. Use:
+
+```bash
+npm run stop
+```
+
+to stop both.
+
+If you need different ports, run:
+
+```bash
+powershell -ExecutionPolicy Bypass -File .\scripts\run-dev.ps1 -BackendPort 8001 -FrontendPort 3001
+```
+
 ### Backend
 
 ```bash

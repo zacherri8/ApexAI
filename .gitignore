@@ -58,6 +58,8 @@ pnpm-debug.log*
 # Build / misc caches
 .cache/
 coverage/
+tmp/
+.codex/
 
 # Large local media
 *.mp4

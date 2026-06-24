@@ -1,0 +1,9 @@
+{
+  "name": "apexai-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "powershell -ExecutionPolicy Bypass -File .\\scripts\\run-dev.ps1",
+    "dev:ports": "powershell -ExecutionPolicy Bypass -File .\\scripts\\run-dev.ps1 -BackendPort 8000 -FrontendPort 3000",
+    "stop": "powershell -ExecutionPolicy Bypass -File .\\scripts\\stop-dev.ps1"
+  }
+}
